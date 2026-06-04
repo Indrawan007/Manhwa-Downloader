@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #e94560, #0f3460);
+      padding: 16px;
+      text-align: center;
+    }
+    
+    .header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    
+    .header p {
+      font-size: 11px;
+      opacity: 0.8;
+      margin-top: 2px;
+    }
+    
+    .content {
+      padding: 16px;
+    }
+    
+    .info-box {
+      background: #16213e;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    
+    .info-row:last-child { margin-bottom: 0; }
+    
+    .info-label { color: #aaa; }
+    
+    .info-value {
+      color: #e94560;
+      font-weight: 600;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+    }
+    
+    .badge {
+      background: #e94560;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 8px;
+      letter-spacing: 0.5px;
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .btn-primary {
+      background: #e94560;
+      color: white;
+    }
+    
+    .btn-primary:hover:not(:disabled) {
+      background: #c73652;
+      transform: translateY(-1px);
+    }
+    
+    .btn-success {
+      background: #27ae60;
+      color: white;
+    }
+    
+    .btn-success:hover:not(:disabled) {
+      background: #219a52;
+    }
+    
+    .btn-warning {
+      background: #f39c12;
+      color: white;
+    }
+    
+    .btn-warning:hover:not(:disabled) {
+      background: #d68910;
+    }
+    
+    .btn-danger {
+      background: #c0392b;
+      color: white;
+    }
+    
+    .btn-outline {
+      background: transparent;
+      color: #aaa;
+      border: 1px solid #333;
+    }
+    
+    .btn-outline:hover:not(:disabled) {
+      border-color: #e94560;
+      color: #e94560;
+    }
+    
+    .progress-container {
+      margin-bottom: 12px;
+      display: none;
+    }
+    
+    .progress-label {
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+    }
+    
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: #16213e;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #e94560, #f39c12);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    
+    .status {
+      font-size: 12px;
+      padding: 8px;
+      border-radius: 6px;
+      text-align: center;
+      margin-bottom: 8px;
+      display: none;
+    }
+    
+    .status.info { background: #1a3a5c; color: #74b9ff; }
+    .status.success { background: #1a3a2a; color: #55efc4; }
+    .status.warning { background: #3a2a1a; color: #fdcb6e; }
+    .status.error { background: #3a1a1a; color: #ff7675; }
+    
+    .divider {
+      border: none;
+      border-top: 1px solid #333;
+      margin: 12px 0;
+    }
+    
+    .section-title {
+      font-size: 11px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    
+    .collecting-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: #e94560;
+      border-radius: 50%;
+      margin-right: 6px;
+      animation: pulse 1s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    
+    .state-idle .btn-stop, 
+    .state-idle .btn-scroll,
+    .state-idle .btn-download {
+      display: none;
+    }
+    
+    .state-collecting .btn-start {
+      display: none;
+    }
+    
+    .state-done .btn-start,
+    .state-done .btn-stop,
+    .state-done .btn-scroll { 
+      display: none; 
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🗂️ Manhwa Downloader</h1>
+    <p>Download chapters as ZIP</p>
+  </div>
+  
+  <div class="content">
+    <!-- Info -->
+    <div class="info-box">
+      <div class="info-row">
+        <span class="info-label">Title</span>
+        <span class="info-value" id="manhwaTitle">-</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Images Found</span>
+        <span class="badge" id="imageCount">0</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Status</span>
+        <span class="info-value" id="statusText">Ready</span>
+      </div>
+    </div>
+    
+    <!-- Status Message -->
+    <div class="status" id="statusMsg"></div>
+    
+    <!-- Progress Scroll -->
+    <div class="progress-container" id="scrollProgress">
+      <div class="progress-label">
+        <span>Auto-scrolling...</span>
+        <span id="scrollPct">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="scrollFill"></div>
+      </div>
+    </div>
+    
+    <!-- Progress ZIP -->
+    <div class="progress-container" id="zipProgress">
+      <div class="progress-label">
+        <span>Creating ZIP...</span>
+        <span id="zipPct">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="zipFill"></div>
+      </div>
+    </div>
+    
+    <!-- Buttons -->
+    <div class="btn-group" id="btnGroup">
+      <p class="section-title">Actions</p>
+      
+      <!-- State: Idle -->
+      <button class="btn btn-primary btn-start" id="btnStart">
+        ▶ Start Collecting
+      </button>
+      
+      <!-- State: Collecting -->
+      <button class="btn btn-warning btn-scroll" id="btnScroll" style="display:none">
+        ↕ Auto-Scroll (Lazy Load)
+      </button>
+      
+      <button class="btn btn-success btn-download" id="btnDownload" style="display:none">
+        ⬇ Download ZIP
+      </button>
+      
+      <button class="btn btn-danger btn-stop" id="btnStop" style="display:none">
+        ⏹ Stop Collecting
+      </button>
+      
+      <hr class="divider">
+      
+      <button class="btn btn-outline" id="btnReset">
+        🔄 Reset
+      </button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
