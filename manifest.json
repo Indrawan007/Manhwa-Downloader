@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Manhwa Downloader",
   "version": "1.0.0",
-  "description": "Download semua gambar manhwa/manga dalam satu ZIP file",
+  "description": "Download semua gambar manhwa/manga dalam satu ZIP file dengan auto-scroll",
   "permissions": [
     "activeTab",
     "scripting",

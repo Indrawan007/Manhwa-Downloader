@@ -1,5 +1,6 @@
 /**
  * Background Service Worker - Manhwa Downloader
+ * Handle download requests dari popup
  */
 
 'use strict';

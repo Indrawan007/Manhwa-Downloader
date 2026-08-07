@@ -1,6 +1,6 @@
 /**
  * Popup Controller - Manhwa Downloader
- * Auto-download after scan complete
+ * Fixed version - No ReferenceError
  */
 
 (() => {
@@ -97,22 +97,13 @@
     if (text) $progressText.textContent = text;
   }
 
-  /**
-   * ✨ Smart pad number - auto detect digit dari total
-   */
   function padNumber(num, format, total = 0) {
     if (format === 'auto') {
       const digits = Math.max(2, String(total).length);
       return String(num).padStart(digits, '0');
     }
 
-    const digitMap = {
-      '1digit': 1,
-      '2digit': 2,
-      '3digit': 3,
-      '4digit': 4,
-    };
-
+    const digitMap = { '1digit': 1, '2digit': 2, '3digit': 3, '4digit': 4 };
     const digits = digitMap[format] || 3;
     return String(num).padStart(digits, '0');
   }
@@ -141,53 +132,31 @@
     return name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'manhwa-chapter';
   }
 
-/**
- * ⚡ Convert Array of bytes → Blob (lebih cepat dari base64)
- */
-function arrayToBlob(dataArray, mimeType = 'image/jpeg') {
-  const uint8Array = new Uint8Array(dataArray);
-  return new Blob([uint8Array], { type: mimeType });
-}
-
-/**
- * ⚡ Fetch image via content script - pakai Array transfer
- */
-async function fetchImageViaContentScript(url) {
-  const response = await chrome.tabs.sendMessage(activeTabId, {
-    action: 'FETCH_IMAGE',
-    url,
-  });
-
-  if (!response?.success) {
-    throw new Error(response?.error || 'Fetch failed');
+  function arrayToBlob(dataArray, mimeType = 'image/jpeg') {
+    const uint8Array = new Uint8Array(dataArray);
+    return new Blob([uint8Array], { type: mimeType });
   }
 
-  // ⚡ Prefer array transfer (baru), fallback ke base64 (lama)
-  if (response.data) {
-    return {
-      blob: arrayToBlob(response.data, response.mimeType),
-      mimeType: response.mimeType,
-    };
+  async function fetchImageViaContentScript(url) {
+    const response = await chrome.tabs.sendMessage(activeTabId, {
+      action: 'FETCH_IMAGE',
+      url,
+    });
+
+    if (!response?.success) {
+      throw new Error(response?.error || 'Fetch failed');
+    }
+
+    if (response.data) {
+      return {
+        blob: arrayToBlob(response.data, response.mimeType),
+        mimeType: response.mimeType,
+      };
+    }
+
+    throw new Error('Invalid response format');
   }
 
-  // Fallback untuk backward compat
-  const [meta, data] = response.base64.split(',');
-  const mimeMatch = meta.match(/:(.*?);/);
-  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return {
-    blob: new Blob([bytes], { type: mime }),
-    mimeType: response.mimeType || mime,
-  };
-}
-
-  /**
-   * ✨ Update format hint dinamis
-   */
   function updateFormatHint() {
     if (!$formatHint) return;
 
@@ -218,6 +187,62 @@ async function fetchImageViaContentScript(url) {
       $formatHint.textContent = `Preview: ${first} → ${last}`;
       $formatHint.classList.add('active');
     }
+  }
+
+  function deduplicateUrls(urls) {
+    const seen = new Set();
+    const unique = [];
+    let duplicates = 0;
+
+    for (const url of urls) {
+      if (!seen.has(url)) {
+        seen.add(url);
+        unique.push(url);
+      } else {
+        duplicates++;
+      }
+    }
+
+    if (duplicates > 0) {
+      console.warn(`[ManhwaDL Popup] Removed ${duplicates} duplicate URLs`);
+    }
+
+    return unique;
+  }
+
+  async function fetchSingleImage(url, maxRetry = 2) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= maxRetry; attempt++) {
+      try {
+        if (url.startsWith('blob:')) {
+          return await fetchImageViaContentScript(url);
+        }
+
+        try {
+          const response = await fetch(url, {
+            mode: 'cors',
+            credentials: 'include',
+            headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
+          });
+
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+          const blob = await response.blob();
+          return { blob, mimeType: blob.type };
+        } catch (directError) {
+          return await fetchImageViaContentScript(url);
+        }
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetry) {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          console.warn(`[ManhwaDL] Retry ${attempt + 1}/${maxRetry} for:`, url);
+        }
+      }
+    }
+
+    throw lastError || new Error('Fetch failed after retries');
   }
 
   /* ══════════════════════════════════════
@@ -257,7 +282,6 @@ async function fetchImageViaContentScript(url) {
     isScanning = true;
     setAppStatus('Scanning', 'warning');
 
-    // UI: show progress, hide others
     $btnScan.disabled = true;
     $btnScan.classList.add('hidden');
     $btnStop.classList.remove('hidden');
@@ -268,7 +292,6 @@ async function fetchImageViaContentScript(url) {
     $statusMessage.classList.add('hidden');
     $progressBar.classList.add('hidden');
 
-    // Reset progress display
     $scanPhase.textContent = 'Starting';
     $scanCollected.textContent = '0';
     $scanProgressFill.style.width = '0%';
@@ -284,12 +307,14 @@ async function fetchImageViaContentScript(url) {
         speed: $scanSpeed.value,
       });
 
-      if (!response?.success && response?.count === 0) {
-        throw new Error(response?.error || 'Scan failed');
+      if (!response) throw new Error('No response from content script');
+      if (!response.success && (response.count === 0 || !response.images)) {
+        throw new Error(response.error || 'Scan failed');
       }
 
-      scannedImages = response.images || [];
-      scannedMeta = response.meta || [];
+      const rawImages = Array.isArray(response.images) ? response.images : [];
+      scannedImages = deduplicateUrls(rawImages);
+      scannedMeta = Array.isArray(response.meta) ? response.meta : [];
 
       if (!$chapterName.value.trim() && response.title) {
         $chapterName.value = response.title;
@@ -301,39 +326,45 @@ async function fetchImageViaContentScript(url) {
         scanSuccess = true;
         updateFormatHint();
 
-        // Hide scan progress, show preview
         $scanProgress.classList.add('hidden');
         $previewArea.classList.remove('hidden');
         renderPreview();
 
         setAppStatus(`${scannedImages.length} found`, 'success');
 
-        // ✨ AUTO DOWNLOAD - langsung mulai
         const blobCount = scannedImages.filter(u => u.startsWith('blob:')).length;
         const httpCount = scannedImages.length - blobCount;
+        const totalDetected = response.total || scannedImages.length;
+        const missed = totalDetected - scannedImages.length;
+        const dupsRemoved = rawImages.length - scannedImages.length;
 
-        let scanMsg = response.stopped
-          ? `<b>Scan stopped.</b> Captured <b>${scannedImages.length}</b> images.`
-          : `<b>Scan complete!</b> Found <b>${scannedImages.length}</b> images.`;
-
-        if (blobCount > 0) {
-          scanMsg += `<small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
+        let scanMsg;
+        if (response.stopped) {
+          scanMsg = `<b>Scan stopped.</b> Captured <b>${scannedImages.length}</b> images.`;
+        } else if (missed > 0) {
+          scanMsg = `⚠️ <b>Captured ${scannedImages.length}/${totalDetected}</b> unique images`;
+        } else {
+          scanMsg = `✅ <b>Perfect!</b> <b>${scannedImages.length}</b> unique images captured`;
         }
 
-scanMsg += `<br><small>⚡ Auto-downloading...</small>`;
-showStatus(scanMsg, 'success', false);
+        if (dupsRemoved > 0) {
+          scanMsg += `<br><small>🔄 ${dupsRemoved} duplicate(s) removed</small>`;
+        }
 
-// Reset scan state before download
-isScanning = false;
-$btnScan.classList.remove('hidden');
-$btnStop.classList.add('hidden');
-if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+        if (blobCount > 0) {
+          scanMsg += `<br><small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
+        }
 
-// ⚡ Wait lebih pendek (800 → 300)
-await new Promise(r => setTimeout(r, 300));
+        scanMsg += `<br><small>⚡ Auto-downloading...</small>`;
+        showStatus(scanMsg, missed > 0 ? 'warning' : 'success', false);
 
-// ✨ AUTO TRIGGER DOWNLOAD
-await downloadAndZip();
+        isScanning = false;
+        $btnScan.classList.remove('hidden');
+        $btnStop.classList.add('hidden');
+        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+
+        await new Promise(r => setTimeout(r, 300));
+        await downloadAndZip();
 
       } else {
         setAppStatus('No images', 'danger');
@@ -342,8 +373,8 @@ await downloadAndZip();
     } catch (error) {
       setAppStatus('Error', 'danger');
       showStatus(`<b>Error:</b> ${error.message}`, 'error');
+      console.error('[ManhwaDL] Scan error:', error);
     } finally {
-      // Reset scan UI (jika belum ter-reset)
       if (isScanning) {
         isScanning = false;
         $btnScan.disabled = false;
@@ -355,11 +386,9 @@ await downloadAndZip();
 
       $btnScan.disabled = false;
 
-      // Show download button jika ada gambar (untuk re-download)
       if (scanSuccess && scannedImages.length > 0) {
         $btnDownload.classList.remove('hidden');
         $btnDownload.disabled = false;
-        // Update button text
         const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
         if ($btnDownloadText) {
           $btnDownloadText.textContent = 'Download Again';
@@ -385,10 +414,6 @@ await downloadAndZip();
     }, 1000);
   }
 
-  /* ══════════════════════════════════════
-     Test Scroll
-     ══════════════════════════════════════ */
-
   async function testScroll() {
     setAppStatus('Testing', 'info');
     try {
@@ -404,7 +429,7 @@ await downloadAndZip();
           🎯 Test moved: <b>${result.moved}px</b><br><br>
           ${success 
             ? '✅ <b>Compatible!</b> Auto-scroll will work.' 
-            : '❌ <b>Not compatible.</b> This site uses custom scroll handling.'}
+            : '❌ <b>Not compatible.</b>'}
         `;
         showStatus(info, success ? 'success' : 'error');
         setAppStatus(success ? 'Compatible' : 'Not compatible', success ? 'success' : 'danger');
@@ -466,9 +491,7 @@ await downloadAndZip();
       const more = document.createElement('div');
       more.className = 'preview-thumb';
       more.style.cssText = `
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        display: flex; align-items: center; justify-content: center;
         background: var(--color-surface-3);
         font-size: var(--font-size-md);
         color: var(--color-text-2);
@@ -480,7 +503,7 @@ await downloadAndZip();
   }
 
   /* ══════════════════════════════════════
-     Download & ZIP
+     ✅ FIXED: Download & ZIP
      ══════════════════════════════════════ */
 
   async function downloadAndZip() {
@@ -488,11 +511,11 @@ await downloadAndZip();
 
     isDownloading = true;
     setAppStatus('Downloading', 'info');
+
     const format = $namingFormat.value;
     const total = scannedImages.length;
     const chapterName = sanitizeFilename($chapterName.value || 'manhwa-chapter');
 
-    // UI: loading state
     $btnDownload.classList.remove('hidden');
     $btnDownload.disabled = true;
     $btnScan.disabled = true;
@@ -504,78 +527,139 @@ await downloadAndZip();
 
     const zip = new JSZip();
     const folder = zip.folder(chapterName);
-    let completed = 0;
-    let failed = 0;
+    const downloadResults = new Array(total).fill(null);
+    const failedUrls = [];
 
-try {
-  // ⚡ TURBO: 8 concurrent downloads (dari 3)
-  const batchSize = 8;
+    console.log(`[ManhwaDL] Starting download of ${total} images...`);
 
-  for (let i = 0; i < total; i += batchSize) {
-    const batch = scannedImages.slice(i, i + batchSize);
+    try {
+      const batchSize = 6;
 
-    await Promise.allSettled(
-      batch.map(async (url, batchIdx) => {
-        const globalIdx = i + batchIdx;
-        const pageNum = padNumber(globalIdx + 1, format, total);
+      for (let i = 0; i < total; i += batchSize) {
+        const batchEnd = Math.min(i + batchSize, total);
+        const batchPromises = [];
 
-        try {
-          let blob, mimeType;
+        for (let j = i; j < batchEnd; j++) {
+          const url = scannedImages[j];
+          const idx = j;
 
-          if (url.startsWith('blob:')) {
-            const result = await fetchImageViaContentScript(url);
-            blob = result.blob;
-            mimeType = result.mimeType;
-          } else {
-            try {
-              const response = await fetch(url, {
-                mode: 'cors',
-                credentials: 'include',
-                headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
-              });
-              if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              blob = await response.blob();
-              mimeType = blob.type;
-            } catch {
-              const result = await fetchImageViaContentScript(url);
-              blob = result.blob;
-              mimeType = result.mimeType;
-            }
-          }
+          batchPromises.push(
+            (async () => {
+              try {
+                const { blob, mimeType } = await fetchSingleImage(url, 2);
+                const ext = getFileExtension(url, mimeType);
+                const pageNum = padNumber(idx + 1, format, total);
+                const filename = `${pageNum}${ext}`;
 
-          const ext = getFileExtension(url, mimeType);
-          folder.file(`${pageNum}${ext}`, blob);
-        } catch (err) {
-          failed++;
-          console.warn(`[ManhwaDL] Failed ${globalIdx + 1}:`, url, err.message);
+                downloadResults[idx] = {
+                  filename, blob, mimeType,
+                  size: blob.size,
+                  success: true,
+                };
+
+                console.log(`[ManhwaDL] ✅ [${idx + 1}/${total}] ${filename} (${(blob.size / 1024).toFixed(1)} KB)`);
+              } catch (err) {
+                downloadResults[idx] = {
+                  filename: null, blob: null,
+                  success: false,
+                  error: err.message,
+                  url,
+                };
+                failedUrls.push({ index: idx, url, error: err.message });
+                console.error(`[ManhwaDL] ❌ [${idx + 1}/${total}] FAILED:`, err.message);
+              }
+            })()
+          );
         }
-      })
-    );
 
-    completed += batch.length;
-    const pct = Math.round((completed / total) * 80);
-    updateProgress(pct, `⚡ ${Math.min(completed, total)}/${total}`);
-  }
+        await Promise.all(batchPromises);
 
-      if (completed - failed === 0) {
+        const completed = batchEnd;
+        const pct = Math.round((completed / total) * 70);
+        updateProgress(pct, `⚡ ${completed}/${total}`);
+      }
+
+      // RETRY failed
+      if (failedUrls.length > 0) {
+        console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length} failed...`);
+        updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
+
+        for (const failedItem of failedUrls) {
+          try {
+            const { blob, mimeType } = await fetchSingleImage(failedItem.url, 3);
+            const ext = getFileExtension(failedItem.url, mimeType);
+            const pageNum = padNumber(failedItem.index + 1, format, total);
+            const filename = `${pageNum}${ext}`;
+
+            downloadResults[failedItem.index] = {
+              filename, blob, mimeType,
+              size: blob.size,
+              success: true,
+              retry: true,
+            };
+
+            console.log(`[ManhwaDL] ✅ RETRY OK [${failedItem.index + 1}]`);
+          } catch (err) {
+            console.error(`[ManhwaDL] ❌ RETRY FAILED [${failedItem.index + 1}]:`, err.message);
+          }
+        }
+      }
+
+      // Summary
+      const successful = downloadResults.filter(r => r?.success);
+      const failed = total - successful.length;
+
+      console.log(`[ManhwaDL] 📊 Summary: ${successful.length}/${total} downloaded, ${failed} failed`);
+
+      if (successful.length === 0) {
         throw new Error('All images failed to download.');
       }
 
-updateProgress(85, '⚡ Packing ZIP...');
+      // Add to ZIP
+      updateProgress(80, 'Adding to ZIP...');
+      const usedFilenames = new Set();
 
-// ⚡ TURBO: STORE mode (no compression)
-// Gambar JPG/PNG/WEBP sudah ter-compress, kompress lagi = buang-buang waktu
-// Speed: ~5x lebih cepat, size: hanya 2-5% lebih besar
-const zipBlob = await zip.generateAsync(
-  { 
-    type: 'blob', 
-    compression: 'STORE',  // ⚡ STORE bukan DEFLATE
-  },
-  (meta) => {
-    const zipPct = 85 + Math.round(meta.percent * 0.15);
-    updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
-  }
-);
+      for (let i = 0; i < downloadResults.length; i++) {
+        const result = downloadResults[i];
+        if (!result?.success) continue;
+
+        let finalFilename = result.filename;
+        if (usedFilenames.has(finalFilename)) {
+          const baseName = finalFilename.replace(/\.\w+$/, '');
+          const ext = finalFilename.match(/\.\w+$/)?.[0] || '.jpg';
+          let counter = 1;
+          while (usedFilenames.has(`${baseName}_dup${counter}${ext}`)) {
+            counter++;
+          }
+          finalFilename = `${baseName}_dup${counter}${ext}`;
+          console.warn(`[ManhwaDL] ⚠️ Duplicate filename → ${finalFilename}`);
+        }
+
+        usedFilenames.add(finalFilename);
+        folder.file(finalFilename, result.blob);
+      }
+
+      // ✅ FIX: Verify ZIP tanpa reference error
+      const zipFileList = Object.keys(zip.files).filter(name => 
+        !zip.files[name].dir && name.startsWith(chapterName + '/')
+      );
+      const actualZipCount = zipFileList.length;
+
+      console.log(`[ManhwaDL] 📦 ZIP has ${actualZipCount} files, expected ${successful.length}`);
+
+      if (actualZipCount !== successful.length) {
+        console.warn(`[ManhwaDL] ⚠️ Mismatch: ${actualZipCount} vs ${successful.length}`);
+      }
+
+      updateProgress(85, '⚡ Packing ZIP...');
+
+      const zipBlob = await zip.generateAsync(
+        { type: 'blob', compression: 'STORE' },
+        (meta) => {
+          const zipPct = 85 + Math.round(meta.percent * 0.15);
+          updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
+        }
+      );
 
       updateProgress(100, 'Saving...');
       const blobUrl = URL.createObjectURL(zipBlob);
@@ -588,17 +672,30 @@ const zipBlob = await zip.generateAsync(
       });
 
       setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
-
       setAppStatus('Downloaded', 'success');
 
-      const msg = failed > 0
-        ? `✅ <b>Downloaded ${total - failed}/${total}</b> images<br><small>${failed} failed to fetch</small><br><small>📦 <code>${filename}</code></small>`
-        : `✅ <b>Success!</b> ${total} images saved<br><small>📦 <code>${filename}</code></small>`;
+      let msg;
+      if (failed > 0) {
+        const failedNumbers = downloadResults
+          .map((r, i) => !r?.success ? i + 1 : null)
+          .filter(n => n !== null)
+          .slice(0, 5);
+
+        msg = `⚠️ <b>Downloaded ${successful.length}/${total}</b> images<br>`;
+        msg += `<small>❌ Failed: pages ${failedNumbers.join(', ')}${failed > 5 ? '...' : ''}</small><br>`;
+        msg += `<small>📦 <code>${filename}</code></small>`;
+      } else {
+        msg = `✅ <b>Perfect!</b> All ${total} images saved<br>`;
+        msg += `<small>📦 <code>${filename}</code></small><br>`;
+        msg += `<small>💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
+      }
+
       showStatus(msg, failed > 0 ? 'warning' : 'success', false);
 
     } catch (error) {
       setAppStatus('Error', 'danger');
       showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
+      console.error('[ManhwaDL] Download error:', error);
     } finally {
       isDownloading = false;
       $btnDownload.disabled = false;
@@ -608,7 +705,6 @@ const zipBlob = await zip.generateAsync(
       $progressBar.classList.add('hidden');
       updateProgress(0, '');
 
-      // Update button text jadi "Download Again"
       const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
       if ($btnDownloadText) {
         $btnDownloadText.textContent = 'Download Again';
