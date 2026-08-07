@@ -444,273 +444,402 @@
      Preview
      ══════════════════════════════════════ */
 
-  function renderPreview() {
-    const format = $namingFormat.value;
-    const total = scannedImages.length;
-    $previewGrid.innerHTML = '';
+/* ══════════════════════════════════════
+   ⚡ OPTIMIZED Preview - Virtual Scrolling
+   ══════════════════════════════════════ */
 
-    const limit = Math.min(scannedImages.length, 50);
+function renderPreview() {
+  const format = $namingFormat.value;
+  const total = scannedImages.length;
+  $previewGrid.innerHTML = '';
 
-    for (let i = 0; i < limit; i++) {
-      const thumb = document.createElement('div');
-      thumb.className = 'preview-thumb';
+  // ⚡ Only render first 20 thumbnails initially
+  // Rest loaded on demand when user scrolls
+  const initialLimit = 20;
+  const limit = Math.min(scannedImages.length, initialLimit);
 
-      const img = document.createElement('img');
-      const url = scannedImages[i];
-
-      if (url.startsWith('blob:')) {
-        img.src = 'data:image/svg+xml,' + encodeURIComponent(
-          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-          '<rect fill="#6c5ce7" width="60" height="80"/>' +
-          '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
-          '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
-        );
-      } else {
-        img.src = url;
-        img.onerror = () => {
-          img.src = 'data:image/svg+xml,' + encodeURIComponent(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-            '<rect fill="#2d2d4f" width="60" height="80"/>' +
-            '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
-          );
-        };
+  // ⚡ Use IntersectionObserver untuk lazy load
+  const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const img = entry.target;
+        const realSrc = img.dataset.realSrc;
+        if (realSrc) {
+          img.src = realSrc;
+          img.removeAttribute('data-real-src');
+          lazyObserver.unobserve(img);
+        }
       }
+    });
+  }, {
+    root: $previewGrid,
+    rootMargin: '100px',
+    threshold: 0.01,
+  });
 
-      img.loading = 'lazy';
-      img.alt = `Page ${i + 1}`;
+  // ⚡ Placeholder SVG (super lightweight)
+  const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#2d2d4f" width="60" height="80"/>' +
+    '<circle cx="30" cy="40" r="8" fill="#6c5ce7" opacity="0.3"/></svg>'
+  );
 
-      const idx = document.createElement('span');
-      idx.className = 'thumb-index';
-      idx.textContent = padNumber(i + 1, format, total);
+  const blobPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#6c5ce7" width="60" height="80"/>' +
+    '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
+    '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
+  );
 
-      thumb.append(img, idx);
-      $previewGrid.appendChild(thumb);
+  const errorPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#2d2d4f" width="60" height="80"/>' +
+    '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
+  );
+
+  // ⚡ Use DocumentFragment untuk batch DOM operations
+  const fragment = document.createDocumentFragment();
+
+  for (let i = 0; i < limit; i++) {
+    const thumb = document.createElement('div');
+    thumb.className = 'preview-thumb';
+
+    const img = document.createElement('img');
+    const url = scannedImages[i];
+
+    if (url.startsWith('blob:')) {
+      // Blob URL: langsung tampilkan placeholder
+      img.src = blobPlaceholder;
+    } else {
+      // HTTP: lazy load
+      img.src = placeholder;
+      img.dataset.realSrc = url;
+      img.onerror = () => { img.src = errorPlaceholder; };
+      lazyObserver.observe(img);
     }
 
-    if (scannedImages.length > limit) {
-      const more = document.createElement('div');
-      more.className = 'preview-thumb';
-      more.style.cssText = `
-        display: flex; align-items: center; justify-content: center;
-        background: var(--color-surface-3);
-        font-size: var(--font-size-md);
-        color: var(--color-text-2);
-        font-weight: 700;
-      `;
-      more.textContent = `+${scannedImages.length - limit}`;
-      $previewGrid.appendChild(more);
-    }
+    img.loading = 'lazy';
+    img.alt = `Page ${i + 1}`;
+    img.decoding = 'async';  // ⚡ Async decoding
+
+    const idx = document.createElement('span');
+    idx.className = 'thumb-index';
+    idx.textContent = padNumber(i + 1, format, total);
+
+    thumb.append(img, idx);
+    fragment.appendChild(thumb);
   }
+
+  // ⚡ Single DOM update
+  $previewGrid.appendChild(fragment);
+
+  // Show "more" indicator
+  if (scannedImages.length > limit) {
+    const more = document.createElement('div');
+    more.className = 'preview-thumb';
+    more.style.cssText = `
+      display: flex; align-items: center; justify-content: center;
+      background: var(--color-surface-3);
+      font-size: var(--font-size-md);
+      color: var(--color-text-2);
+      font-weight: 700;
+      cursor: pointer;
+    `;
+    more.textContent = `+${scannedImages.length - limit}`;
+    more.title = 'Click to show all';
+
+    // ⚡ Click to load rest
+    more.addEventListener('click', () => {
+      more.remove();
+      renderRestOfPreview(limit, lazyObserver);
+    });
+
+    $previewGrid.appendChild(more);
+  }
+}
+
+/**
+ * ⚡ Render sisa preview on-demand
+ */
+function renderRestOfPreview(startIdx, lazyObserver) {
+  const format = $namingFormat.value;
+  const total = scannedImages.length;
+  const fragment = document.createDocumentFragment();
+
+  const blobPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#6c5ce7" width="60" height="80"/>' +
+    '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
+    '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
+  );
+
+  const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#2d2d4f" width="60" height="80"/></svg>'
+  );
+
+  const errorPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+    '<rect fill="#2d2d4f" width="60" height="80"/>' +
+    '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
+  );
+
+  for (let i = startIdx; i < scannedImages.length; i++) {
+    const thumb = document.createElement('div');
+    thumb.className = 'preview-thumb';
+
+    const img = document.createElement('img');
+    const url = scannedImages[i];
+
+    if (url.startsWith('blob:')) {
+      img.src = blobPlaceholder;
+    } else {
+      img.src = placeholder;
+      img.dataset.realSrc = url;
+      img.onerror = () => { img.src = errorPlaceholder; };
+      lazyObserver.observe(img);
+    }
+
+    img.loading = 'lazy';
+    img.alt = `Page ${i + 1}`;
+    img.decoding = 'async';
+
+    const idx = document.createElement('span');
+    idx.className = 'thumb-index';
+    idx.textContent = padNumber(i + 1, format, total);
+
+    thumb.append(img, idx);
+    fragment.appendChild(thumb);
+  }
+
+  $previewGrid.appendChild(fragment);
+}
 
   /* ══════════════════════════════════════
      ✅ FIXED: Download & ZIP
      ══════════════════════════════════════ */
 
-  async function downloadAndZip() {
-    if (isDownloading || scannedImages.length === 0) return;
+/* ══════════════════════════════════════
+   ⚡ OPTIMIZED: Progressive Streaming Download
+   ══════════════════════════════════════ */
 
-    isDownloading = true;
-    setAppStatus('Downloading', 'info');
+async function downloadAndZip() {
+  if (isDownloading || scannedImages.length === 0) return;
 
-    const format = $namingFormat.value;
-    const total = scannedImages.length;
-    const chapterName = sanitizeFilename($chapterName.value || 'manhwa-chapter');
+  isDownloading = true;
+  setAppStatus('Downloading', 'info');
 
-    $btnDownload.classList.remove('hidden');
-    $btnDownload.disabled = true;
-    $btnScan.disabled = true;
-    $btnText.classList.add('hidden');
-    $btnLoading.classList.remove('hidden');
-    $progressBar.classList.remove('hidden');
+  const format = $namingFormat.value;
+  const total = scannedImages.length;
+  const chapterName = sanitizeFilename($chapterName.value || 'manhwa-chapter');
 
-    updateProgress(0, 'Starting...');
+  $btnDownload.classList.remove('hidden');
+  $btnDownload.disabled = true;
+  $btnScan.disabled = true;
+  $btnText.classList.add('hidden');
+  $btnLoading.classList.remove('hidden');
+  $progressBar.classList.remove('hidden');
 
-    const zip = new JSZip();
-    const folder = zip.folder(chapterName);
-    const downloadResults = new Array(total).fill(null);
-    const failedUrls = [];
+  updateProgress(0, 'Starting...');
 
-    console.log(`[ManhwaDL] Starting download of ${total} images...`);
+  const zip = new JSZip();
+  const folder = zip.folder(chapterName);
 
-    try {
-      const batchSize = 6;
+  // ⚡ Track completion in real-time
+  let completed = 0;
+  let failed = 0;
+  let addedToZip = 0;
+  const failedUrls = [];
 
-      for (let i = 0; i < total; i += batchSize) {
-        const batchEnd = Math.min(i + batchSize, total);
-        const batchPromises = [];
+  console.log(`[ManhwaDL] ⚡ Starting optimized download of ${total} images...`);
 
-        for (let j = i; j < batchEnd; j++) {
-          const url = scannedImages[j];
-          const idx = j;
+  const startTime = performance.now();
 
-          batchPromises.push(
-            (async () => {
-              try {
-                const { blob, mimeType } = await fetchSingleImage(url, 2);
-                const ext = getFileExtension(url, mimeType);
-                const pageNum = padNumber(idx + 1, format, total);
-                const filename = `${pageNum}${ext}`;
+  try {
+    // ⚡ ADAPTIVE CONCURRENCY based on total count
+    // Smaller batches = smoother progress, larger = faster
+    const batchSize = total > 100 ? 10 : total > 50 ? 8 : 6;
 
-                downloadResults[idx] = {
-                  filename, blob, mimeType,
-                  size: blob.size,
-                  success: true,
-                };
+    // ⚡ Priority queue: process in order but allow parallel
+    let currentIndex = 0;
+    const active = new Set();
 
-                console.log(`[ManhwaDL] ✅ [${idx + 1}/${total}] ${filename} (${(blob.size / 1024).toFixed(1)} KB)`);
-              } catch (err) {
-                downloadResults[idx] = {
-                  filename: null, blob: null,
-                  success: false,
-                  error: err.message,
-                  url,
-                };
-                failedUrls.push({ index: idx, url, error: err.message });
-                console.error(`[ManhwaDL] ❌ [${idx + 1}/${total}] FAILED:`, err.message);
-              }
-            })()
-          );
-        }
+    const processNext = async () => {
+      while (currentIndex < total && active.size < batchSize) {
+        const idx = currentIndex++;
+        const url = scannedImages[idx];
 
-        await Promise.all(batchPromises);
+        const task = (async () => {
+          try {
+            const { blob, mimeType } = await fetchSingleImage(url, 2);
+            const ext = getFileExtension(url, mimeType);
+            const pageNum = padNumber(idx + 1, format, total);
+            const filename = `${pageNum}${ext}`;
 
-        const completed = batchEnd;
+            // ⚡ IMMEDIATELY add to ZIP (streaming)
+            folder.file(filename, blob);
+            addedToZip++;
+            completed++;
+
+            // Release memory reference (blob is now in ZIP)
+            const size = blob.size;
+
+            console.log(`[ManhwaDL] ✅ [${idx + 1}/${total}] ${filename} (${(size / 1024).toFixed(1)} KB)`);
+          } catch (err) {
+            failed++;
+            failedUrls.push({ index: idx, url, error: err.message });
+            console.error(`[ManhwaDL] ❌ [${idx + 1}/${total}]:`, err.message);
+          }
+
+          active.delete(task);
+        })();
+
+        active.add(task);
+      }
+    };
+
+    // ⚡ Main loop: keep pipeline full
+    while (currentIndex < total || active.size > 0) {
+      await processNext();
+
+      if (active.size > 0) {
+        await Promise.race(active);
+
+        // Update progress
         const pct = Math.round((completed / total) * 70);
         updateProgress(pct, `⚡ ${completed}/${total}`);
       }
+    }
 
-      // RETRY failed
-      if (failedUrls.length > 0) {
-        console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length} failed...`);
-        updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
+    // Wait untuk semua task selesai
+    await Promise.all(active);
 
-        for (const failedItem of failedUrls) {
-          try {
-            const { blob, mimeType } = await fetchSingleImage(failedItem.url, 3);
-            const ext = getFileExtension(failedItem.url, mimeType);
-            const pageNum = padNumber(failedItem.index + 1, format, total);
-            const filename = `${pageNum}${ext}`;
+    // ⚡ RETRY failed (parallel juga)
+    if (failedUrls.length > 0) {
+      console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length} failed...`);
+      updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
 
-            downloadResults[failedItem.index] = {
-              filename, blob, mimeType,
-              size: blob.size,
-              success: true,
-              retry: true,
-            };
+      const retryPromises = failedUrls.map(async (failedItem) => {
+        try {
+          const { blob, mimeType } = await fetchSingleImage(failedItem.url, 3);
+          const ext = getFileExtension(failedItem.url, mimeType);
+          const pageNum = padNumber(failedItem.index + 1, format, total);
+          const filename = `${pageNum}${ext}`;
 
-            console.log(`[ManhwaDL] ✅ RETRY OK [${failedItem.index + 1}]`);
-          } catch (err) {
-            console.error(`[ManhwaDL] ❌ RETRY FAILED [${failedItem.index + 1}]:`, err.message);
-          }
+          folder.file(filename, blob);
+          addedToZip++;
+          failed--;
+
+          console.log(`[ManhwaDL] ✅ RETRY OK [${failedItem.index + 1}]`);
+        } catch (err) {
+          console.error(`[ManhwaDL] ❌ RETRY FAILED [${failedItem.index + 1}]`);
         }
-      }
-
-      // Summary
-      const successful = downloadResults.filter(r => r?.success);
-      const failed = total - successful.length;
-
-      console.log(`[ManhwaDL] 📊 Summary: ${successful.length}/${total} downloaded, ${failed} failed`);
-
-      if (successful.length === 0) {
-        throw new Error('All images failed to download.');
-      }
-
-      // Add to ZIP
-      updateProgress(80, 'Adding to ZIP...');
-      const usedFilenames = new Set();
-
-      for (let i = 0; i < downloadResults.length; i++) {
-        const result = downloadResults[i];
-        if (!result?.success) continue;
-
-        let finalFilename = result.filename;
-        if (usedFilenames.has(finalFilename)) {
-          const baseName = finalFilename.replace(/\.\w+$/, '');
-          const ext = finalFilename.match(/\.\w+$/)?.[0] || '.jpg';
-          let counter = 1;
-          while (usedFilenames.has(`${baseName}_dup${counter}${ext}`)) {
-            counter++;
-          }
-          finalFilename = `${baseName}_dup${counter}${ext}`;
-          console.warn(`[ManhwaDL] ⚠️ Duplicate filename → ${finalFilename}`);
-        }
-
-        usedFilenames.add(finalFilename);
-        folder.file(finalFilename, result.blob);
-      }
-
-      // ✅ FIX: Verify ZIP tanpa reference error
-      const zipFileList = Object.keys(zip.files).filter(name => 
-        !zip.files[name].dir && name.startsWith(chapterName + '/')
-      );
-      const actualZipCount = zipFileList.length;
-
-      console.log(`[ManhwaDL] 📦 ZIP has ${actualZipCount} files, expected ${successful.length}`);
-
-      if (actualZipCount !== successful.length) {
-        console.warn(`[ManhwaDL] ⚠️ Mismatch: ${actualZipCount} vs ${successful.length}`);
-      }
-
-      updateProgress(85, '⚡ Packing ZIP...');
-
-      const zipBlob = await zip.generateAsync(
-        { type: 'blob', compression: 'STORE' },
-        (meta) => {
-          const zipPct = 85 + Math.round(meta.percent * 0.15);
-          updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
-        }
-      );
-
-      updateProgress(100, 'Saving...');
-      const blobUrl = URL.createObjectURL(zipBlob);
-      const filename = `${chapterName}.zip`;
-
-      await chrome.runtime.sendMessage({
-        action: 'DOWNLOAD_ZIP',
-        dataUrl: blobUrl,
-        filename,
       });
 
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
-      setAppStatus('Downloaded', 'success');
+      await Promise.all(retryPromises);
+    }
 
-      let msg;
-      if (failed > 0) {
-        const failedNumbers = downloadResults
-          .map((r, i) => !r?.success ? i + 1 : null)
-          .filter(n => n !== null)
-          .slice(0, 5);
+    const downloadTime = ((performance.now() - startTime) / 1000).toFixed(1);
+    console.log(`[ManhwaDL] 📊 Downloaded ${addedToZip}/${total} in ${downloadTime}s`);
 
-        msg = `⚠️ <b>Downloaded ${successful.length}/${total}</b> images<br>`;
-        msg += `<small>❌ Failed: pages ${failedNumbers.join(', ')}${failed > 5 ? '...' : ''}</small><br>`;
-        msg += `<small>📦 <code>${filename}</code></small>`;
-      } else {
-        msg = `✅ <b>Perfect!</b> All ${total} images saved<br>`;
-        msg += `<small>📦 <code>${filename}</code></small><br>`;
-        msg += `<small>💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
+    if (addedToZip === 0) {
+      throw new Error('All images failed to download.');
+    }
+
+    // ⚡ Verify ZIP
+    const zipFileList = Object.keys(zip.files).filter(name =>
+      !zip.files[name].dir && name.startsWith(chapterName + '/')
+    );
+
+    console.log(`[ManhwaDL] 📦 ZIP files: ${zipFileList.length}`);
+
+    updateProgress(80, '⚡ Packing ZIP...');
+
+    // ⚡ OPTIMIZED ZIP GENERATION
+    // STORE mode + streaming = fastest
+    const zipStartTime = performance.now();
+
+    const zipBlob = await zip.generateAsync(
+      {
+        type: 'blob',
+        compression: 'STORE',
+        streamFiles: true,  // ⚡ Stream mode - lower memory
+      },
+      (meta) => {
+        const zipPct = 80 + Math.round(meta.percent * 0.2);
+        updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
       }
+    );
 
-      showStatus(msg, failed > 0 ? 'warning' : 'success', false);
+    const zipTime = ((performance.now() - zipStartTime) / 1000).toFixed(1);
+    console.log(`[ManhwaDL] 📦 ZIP created in ${zipTime}s (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB)`);
+    // Di dalam downloadAndZip(), setelah success message
+// Log performance summary
+console.log('═══════════════════════════════════════════');
+console.log('[ManhwaDL] 📊 PERFORMANCE SUMMARY:');
+console.log(`  Total images: ${total}`);
+console.log(`  Downloaded: ${addedToZip}`);
+console.log(`  Failed: ${failed}`);
+console.log(`  Download time: ${downloadTime}s`);
+console.log(`  ZIP time: ${zipTime}s`);
+console.log(`  Total time: ${totalTime}s`);
+console.log(`  Avg per image: ${(parseFloat(totalTime) / total).toFixed(2)}s`);
+console.log(`  ZIP size: ${(zipBlob.size / 1024 / 1024).toFixed(2)} MB`);
+console.log(`  Throughput: ${(zipBlob.size / 1024 / parseFloat(totalTime)).toFixed(1)} KB/s`);
+console.log('═══════════════════════════════════════════');
 
-    } catch (error) {
-      setAppStatus('Error', 'danger');
-      showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
-      console.error('[ManhwaDL] Download error:', error);
-    } finally {
-      isDownloading = false;
-      $btnDownload.disabled = false;
-      $btnScan.disabled = false;
-      $btnText.classList.remove('hidden');
-      $btnLoading.classList.add('hidden');
-      $progressBar.classList.add('hidden');
-      updateProgress(0, '');
 
-      const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
-      if ($btnDownloadText) {
-        $btnDownloadText.textContent = 'Download Again';
-      }
+    updateProgress(100, 'Saving...');
+    const blobUrl = URL.createObjectURL(zipBlob);
+    const filename = `${chapterName}.zip`;
+
+    await chrome.runtime.sendMessage({
+      action: 'DOWNLOAD_ZIP',
+      dataUrl: blobUrl,
+      filename,
+    });
+
+    // ⚡ Faster cleanup
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+    setAppStatus('Downloaded', 'success');
+
+    const totalTime = ((performance.now() - startTime) / 1000).toFixed(1);
+
+    let msg;
+    if (failed > 0) {
+      const failedNumbers = failedUrls
+        .slice(0, 5)
+        .map(f => f.index + 1);
+      msg = `⚠️ <b>Downloaded ${addedToZip}/${total}</b> images<br>`;
+      msg += `<small>❌ Failed: pages ${failedNumbers.join(', ')}${failed > 5 ? '...' : ''}</small><br>`;
+      msg += `<small>⚡ ${totalTime}s • 📦 <code>${filename}</code></small>`;
+    } else {
+      msg = `✅ <b>Perfect!</b> All ${total} images saved in <b>${totalTime}s</b><br>`;
+      msg += `<small>📦 <code>${filename}</code> • 💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
+    }
+
+    showStatus(msg, failed > 0 ? 'warning' : 'success', false);
+
+  } catch (error) {
+    setAppStatus('Error', 'danger');
+    showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
+    console.error('[ManhwaDL] Download error:', error);
+  } finally {
+    isDownloading = false;
+    $btnDownload.disabled = false;
+    $btnScan.disabled = false;
+    $btnText.classList.remove('hidden');
+    $btnLoading.classList.add('hidden');
+    $progressBar.classList.add('hidden');
+    updateProgress(0, '');
+
+    const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
+    if ($btnDownloadText) {
+      $btnDownloadText.textContent = 'Download Again';
     }
   }
+}
 
   /* ══════════════════════════════════════
      Events

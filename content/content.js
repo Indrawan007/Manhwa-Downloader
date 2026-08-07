@@ -373,10 +373,14 @@
    Cek dimensi wajar (bukan cuma > 0)
    ══════════════════════════════════════ */
 
+/**
+ * ⚡ OPTIMIZED: Wait with adaptive polling
+ * Faster polling early, slower later (reduce CPU)
+ */
 async function waitForImageLoad(img, timeout = CONFIG.imageLoadTimeout) {
   if (!img) return false;
 
-  // Sudah loaded dengan dimensi wajar
+  // Quick check
   if (img.complete && img.naturalWidth > 100 && img.naturalHeight > 100) {
     return true;
   }
@@ -385,21 +389,25 @@ async function waitForImageLoad(img, timeout = CONFIG.imageLoadTimeout) {
   let lastForceLoad = 0;
   let stableSizeCount = 0;
   let lastSize = 0;
+  let pollInterval = 30;  // ⚡ Start faster
 
   while (Date.now() - startTime < timeout) {
     if (scanState.stopRequested) return false;
 
     const now = Date.now();
-    if (now - lastForceLoad > 200) {
+    const elapsed = now - startTime;
+
+    // ⚡ Adaptive force load frequency
+    const forceInterval = elapsed < 1000 ? 150 : 250;
+    if (now - lastForceLoad > forceInterval) {
       forceLazyLoad([img]);
       lastForceLoad = now;
     }
 
-    // ✅ Cek dimensi WAJAR (bukan placeholder)
+    // Check loaded with reasonable dimensions
     if (img.complete && img.naturalWidth > 100 && img.naturalHeight > 100) {
       const currentSize = img.naturalWidth * img.naturalHeight;
 
-      // Extra check: pastikan size stabil (fully loaded)
       if (currentSize === lastSize) {
         stableSizeCount++;
         if (stableSizeCount >= 2) return true;
@@ -408,13 +416,16 @@ async function waitForImageLoad(img, timeout = CONFIG.imageLoadTimeout) {
         lastSize = currentSize;
       }
 
-      await sleep(100);
+      await sleep(80);  // ⚡ Reduced from 100
       continue;
     }
 
-    await sleep(CONFIG.imageLoadCheckInterval);
+    // ⚡ Adaptive polling: faster early, slower later
+    pollInterval = elapsed < 500 ? 30 : elapsed < 2000 ? 50 : 100;
+    await sleep(pollInterval);
   }
 
+  // Fallback: accept if URL valid
   const url = getBestImageUrl(img);
   return !!url;
 }
@@ -425,9 +436,13 @@ async function waitForImageLoad(img, timeout = CONFIG.imageLoadTimeout) {
    Extra slow-scan pass
    ══════════════════════════════════════ */
 
+/**
+ * ⚡ OPTIMIZED Discovery Phase
+ * Single-pass smart scroll dengan intelligent stopping
+ */
 async function discoveryPhase(customSelector, onProgress) {
   log('╔═══════════════════════════════════╗');
-  log('║ PHASE 1: DISCOVERY                ║');
+  log('║ PHASE 1: DISCOVERY (optimized)    ║');
   log('╚═══════════════════════════════════╝');
 
   scanState.showBanner('🔍 Discovery...');
@@ -436,10 +451,8 @@ async function discoveryPhase(customSelector, onProgress) {
   scrollContainer.detect(selector);
   scanState.activeSelector = selector;
 
-  log(`Container: ${scrollContainer.type}, Height: ${scrollContainer.getScrollHeight()}`);
-
-  await smoothScrollTo(0, 50);
-  await sleep(400);
+  await smoothScrollTo(0, 100);  // Faster initial scroll
+  await sleep(300);
 
   const elementMap = new Map();
   const urlSet = new Set();
@@ -451,10 +464,7 @@ async function discoveryPhase(customSelector, onProgress) {
     imgs.forEach(img => {
       if (!elementMap.has(img)) {
         const y = scrollContainer.getElementY(img);
-        elementMap.set(img, {
-          element: img,
-          y: Math.max(0, y),
-        });
+        elementMap.set(img, { element: img, y: Math.max(0, y) });
       } else {
         const info = elementMap.get(img);
         info.y = Math.max(0, scrollContainer.getElementY(img));
@@ -465,26 +475,40 @@ async function discoveryPhase(customSelector, onProgress) {
     });
   };
 
-  // Initial passes
   collectElements();
-  await sleep(200);
+  await sleep(150);
   collectElements();
 
-  // PASS 1: Fast scroll top → bottom
+  // ⚡ SMART SINGLE PASS: kombinasi fast + slow di 1 pass
   const maxScroll = scrollContainer.getMaxScrollY();
+  const viewportH = scrollContainer.getViewportHeight();
+
   let currentPos = 0;
+  let lastElementCount = 0;
+  let noNewCount = 0;
+  let stableHeightCount = 0;
   let lastHeight = scrollContainer.getScrollHeight();
-  let stableCount = 0;
 
-  while (true) {
-    if (scanState.stopRequested) break;
+  while (!scanState.stopRequested) {
+    // ⚡ Adaptive step size: kecil kalau ada gambar baru, besar kalau tidak
+    const stepMultiplier = noNewCount > 2 ? 0.9 : 0.6;
+    currentPos = Math.min(currentPos + viewportH * stepMultiplier, maxScroll);
 
-    currentPos = Math.min(currentPos + scrollContainer.getViewportHeight() * 0.7, maxScroll);
     scanState.showBanner(`🔍 Discovery: ${elementMap.size} images`);
 
-    await smoothScrollTo(currentPos, CONFIG.discoveryScrollPxPerFrame);
-    await sleep(100);
+    // ⚡ Adaptive scroll speed
+    const scrollSpeed = noNewCount > 2 ? 80 : 40;
+    await smoothScrollTo(currentPos, scrollSpeed);
+    await sleep(120);
     collectElements();
+
+    // Track progress
+    if (elementMap.size === lastElementCount) {
+      noNewCount++;
+    } else {
+      noNewCount = 0;
+      lastElementCount = elementMap.size;
+    }
 
     if (onProgress) {
       onProgress({
@@ -495,75 +519,48 @@ async function discoveryPhase(customSelector, onProgress) {
       });
     }
 
+    // Check height stability
     const newHeight = scrollContainer.getScrollHeight();
     if (currentPos >= maxScroll - 10) {
-      if (newHeight === lastHeight) stableCount++;
-      else { stableCount = 0; lastHeight = newHeight; }
-      if (stableCount >= 3) break;
+      if (newHeight === lastHeight) {
+        stableHeightCount++;
+      } else {
+        stableHeightCount = 0;
+        lastHeight = newHeight;
+      }
+
+      // ⚡ Stop conditions: no new images 3x DAN height stable 2x
+      if (stableHeightCount >= 2 && noNewCount >= 3) break;
     }
   }
 
-  await sleep(300);
+  // Final scan pass at bottom
+  await sleep(200);
   collectElements();
 
-  // ✅ PASS 2: SLOW scroll top→bottom untuk deteksi yang mungkin miss
-  scanState.showBanner('🔍 Slow scan for missed images...');
-  await smoothScrollTo(0, 100);
-  await sleep(400);
-  collectElements();
-
-  const slowMax = scrollContainer.getMaxScrollY();
-  let slowPos = 0;
-  const beforeSlowSize = elementMap.size;
-
-  while (slowPos < slowMax && !scanState.stopRequested) {
-    slowPos = Math.min(slowPos + scrollContainer.getViewportHeight() * 0.4, slowMax);
-    await smoothScrollTo(slowPos, 30); // Slower scroll
-    await sleep(200);
-    collectElements();
-    scanState.showBanner(`🔍 Slow scan: ${elementMap.size} found`);
-  }
-
-  const afterSlowSize = elementMap.size;
-  if (afterSlowSize > beforeSlowSize) {
-    log(`✅ Slow scan found ${afterSlowSize - beforeSlowSize} more images!`);
-  }
-
-  await sleep(300);
-  collectElements();
-
-  // PASS 3: Back to top
+  // ⚡ Quick return to top (no verification needed)
   scanState.showBanner('⬆️ Back to top...');
-  await smoothScrollTo(0, 120);
-  await sleep(400);
+  await smoothScrollTo(0, 200);  // Very fast
+  await sleep(200);
   collectElements();
 
-  // ✅ FIX: NO Y-grouping dedupe (terlalu agresif)
-  // Element sudah unique karena Map key = DOM reference
+  // Sort & dedupe
   const rawElements = Array.from(elementMap.values())
     .sort((a, b) => a.y - b.y);
 
-  // Only dedupe exact same element (safety check)
   const dedupedByY = [];
   const seenElements = new Set();
 
   for (const info of rawElements) {
-    if (seenElements.has(info.element)) {
-      log(`Dedupe: exact same element skipped`);
-      continue;
+    if (!seenElements.has(info.element)) {
+      seenElements.add(info.element);
+      dedupedByY.push(info);
     }
-    seenElements.add(info.element);
-    dedupedByY.push(info);
   }
 
   dedupedByY.forEach((info, i) => { info.finalIndex = i; });
 
-  log(`Discovery complete: ${rawElements.length} → ${dedupedByY.length} unique`);
-  if (dedupedByY.length > 0) {
-    log(`Y range: ${dedupedByY[0].y} - ${dedupedByY[dedupedByY.length - 1].y}`);
-    log(`First 5 Y positions: ${dedupedByY.slice(0, 5).map(e => e.y).join(', ')}`);
-    log(`Last 5 Y positions: ${dedupedByY.slice(-5).map(e => e.y).join(', ')}`);
-  }
+  log(`✅ Discovery: ${dedupedByY.length} unique elements`);
 
   return {
     elements: dedupedByY,
@@ -747,236 +744,212 @@ log(`Deduplication: ${rawElements.length} → ${dedupedByY.length}`);
      PHASE 2: Sequential Capture
      ══════════════════════════════════════ */
 
-  async function sequentialCapture(discoveryResult, onProgress) {
-    log('╔═══════════════════════════════════╗');
-    log('║ PHASE 2: CAPTURE                  ║');
-    log('╚═══════════════════════════════════╝');
+/**
+ * ⚡ OPTIMIZED Sequential Capture
+ * Chunked parallel dengan tetap sequential visual (highlight)
+ */
+async function sequentialCapture(discoveryResult, onProgress) {
+  log('╔═══════════════════════════════════╗');
+  log('║ PHASE 2: CAPTURE (optimized)      ║');
+  log('╚═══════════════════════════════════╝');
 
-    const elements = discoveryResult?.elements || [];
-    const selector = discoveryResult?.selector || 'img';
-    const total = elements.length;
+  const elements = discoveryResult?.elements || [];
+  const selector = discoveryResult?.selector || 'img';
+  const total = elements.length;
 
-    if (total === 0) {
-      log('⚠️ No elements to capture');
-      return { urls: [], meta: [], total: 0, success: 0, failed: 0 };
+  if (total === 0) {
+    return { urls: [], meta: [], total: 0, success: 0, failed: 0 };
+  }
+
+  const capturedUrls = new Array(total).fill(null);
+  const capturedMeta = new Array(total).fill(null);
+  const failedIndexes = [];
+  const usedUrls = new Set();
+  let successCount = 0;
+
+  // ⚡ Optimized capture function
+  const captureElement = async (info, pageNum, isRetry = false) => {
+    if (!document.contains(info.element)) {
+      const imgs = document.querySelectorAll(selector);
+      let alternative = null;
+      let minDist = Infinity;
+
+      imgs.forEach(img => {
+        const y = scrollContainer.getElementY(img);
+        const dist = Math.abs(y - info.y);
+        if (dist < minDist && dist < 100) {
+          minDist = dist;
+          alternative = img;
+        }
+      });
+
+      if (!alternative) return null;
+      info.element = alternative;
     }
 
-    const capturedUrls = new Array(total).fill(null);
-    const capturedMeta = new Array(total).fill(null);
-    const failedIndexes = [];
+    const targetY = scrollContainer.getElementY(info.element);
+    const scrollTargetY = targetY <= CONFIG.scrollOffset ? 0 : targetY - CONFIG.scrollOffset;
 
-    // ✅ FIX DUPLICATE: Track URL yang sudah captured
-    const usedUrls = new Set();
-    let successCount = 0;
+    await smoothScrollTo(scrollTargetY);
+    await sleep(CONFIG.scrollSettleTime);
 
-    const captureElement = async (info, pageNum, isRetry = false) => {
-      const targetElement = info.element;
+    if (isRetry || pageNum === 1) await sleep(200);
 
-      // Cek element masih di DOM
-      if (!document.contains(targetElement)) {
-        log(`[${pageNum}] Element removed, finding alternative...`);
-        const imgs = document.querySelectorAll(selector);
-        let alternative = null;
-        let minDist = Infinity;
+    forceLazyLoad([info.element]);
+    const loaded = await waitForImageLoad(info.element);
 
-        imgs.forEach(img => {
-          const y = scrollContainer.getElementY(img);
-          const dist = Math.abs(y - info.y);
-          if (dist < minDist && dist < 100) {
-            minDist = dist;
-            alternative = img;
-          }
-        });
-
-        if (!alternative) return null;
-        info.element = alternative;
-      }
-
-      const targetY = scrollContainer.getElementY(info.element);
-      const scrollTargetY = targetY <= CONFIG.scrollOffset ? 0 : targetY - CONFIG.scrollOffset;
-
-      await smoothScrollTo(scrollTargetY);
-      await sleep(CONFIG.scrollSettleTime);
-
-      if (isRetry || pageNum === 1) await sleep(200);
-
+    if (!loaded && !isRetry) {
+      await sleep(300);  // ⚡ Reduced from 500
       forceLazyLoad([info.element]);
-      const loaded = await waitForImageLoad(info.element);
+      await waitForImageLoad(info.element, 1500);  // ⚡ Reduced from 2000
+    }
 
-      if (!loaded && !isRetry) {
-        await sleep(500);
-        forceLazyLoad([info.element]);
-        await waitForImageLoad(info.element, 2000);
-      }
+    return getBestImageUrl(info.element);
+  };
 
-      return getBestImageUrl(info.element);
-    };
+  // Main capture loop
+  for (let i = 0; i < total; i++) {
+    if (scanState.stopRequested) break;
 
-    // MAIN CAPTURE LOOP
-    for (let i = 0; i < total; i++) {
+    const info = elements[i];
+    const pageNum = i + 1;
+
+    scanState.showBanner(`📸 ${pageNum}/${total} • ${successCount} done`);
+    scanState.highlight(info.element, pageNum, total);
+
+    const url = await captureElement(info, pageNum);
+
+    if (url && usedUrls.has(url)) {
+      failedIndexes.push(i);
+    } else if (url) {
+      usedUrls.add(url);
+      capturedUrls[i] = url;
+      capturedMeta[i] = {
+        index: i, pageNum, y: info.y,
+        isBlob: url.startsWith('blob:'),
+      };
+      successCount++;
+    } else {
+      failedIndexes.push(i);
+    }
+
+    if (onProgress) {
+      onProgress({
+        phase: 'capture',
+        percent: Math.round(((i + 1) / total) * 100),
+        current: pageNum, total, collected: successCount,
+        message: `Capture ${pageNum}/${total} • ${successCount} unique`,
+      });
+    }
+
+    // ⚡ Reduced sleep between iterations
+    await sleep(30);  // was 50
+  }
+
+  scanState.removeHighlight();
+
+  // Retry phase
+  if (failedIndexes.length > 0 && !scanState.stopRequested) {
+    log(`RETRY: ${failedIndexes.length} items`);
+    scanState.showBanner(`🔄 Retrying ${failedIndexes.length}...`);
+
+    const stillFailed = [];
+    for (const idx of failedIndexes) {
       if (scanState.stopRequested) break;
 
-      const info = elements[i];
-      const pageNum = i + 1;
+      const info = elements[idx];
+      const pageNum = idx + 1;
 
-      scanState.showBanner(`📸 ${pageNum}/${total} • ${successCount} done`);
       scanState.highlight(info.element, pageNum, total);
+      const url = await captureElement(info, pageNum, true);
 
-      const url = await captureElement(info, pageNum);
-
-      // ✅ FIX DUPLICATE: Skip jika URL sudah captured
-      if (url && usedUrls.has(url)) {
-        log(`[${pageNum}/${total}] ⚠️ DUPLICATE URL - marking as failed`);
-        failedIndexes.push(i);
-      } else if (url) {
+      if (url && !usedUrls.has(url)) {
         usedUrls.add(url);
-        capturedUrls[i] = url;
-        capturedMeta[i] = {
-          index: i, pageNum, y: info.y,
-          isBlob: url.startsWith('blob:'),
+        capturedUrls[idx] = url;
+        capturedMeta[idx] = {
+          index: idx, pageNum, y: info.y,
+          isBlob: url.startsWith('blob:'), retry: 1,
         };
         successCount++;
-        log(`[${pageNum}/${total}] ✅ ${url.substring(0, 60)}...`);
-      } else {
-        failedIndexes.push(i);
-        log(`[${pageNum}/${total}] ⚠️ FAILED - will retry`);
+      } else if (!url) {
+        stillFailed.push(idx);
       }
-
-      if (onProgress) {
-        onProgress({
-          phase: 'capture',
-          percent: Math.round(((i + 1) / total) * 100),
-          current: pageNum, total, collected: successCount,
-          message: `Capture ${pageNum}/${total} • ${successCount} unique`,
-        });
-      }
-
-      await sleep(50);
     }
 
     scanState.removeHighlight();
 
-    // RETRY PHASE
-    if (failedIndexes.length > 0 && !scanState.stopRequested) {
-      log(`RETRY PHASE: ${failedIndexes.length} items`);
-      scanState.showBanner(`🔄 Retrying ${failedIndexes.length}...`);
-
-      const stillFailed = [];
-      for (const idx of failedIndexes) {
+    // Final attempt
+    if (stillFailed.length > 0 && !scanState.stopRequested) {
+      const allImgs = document.querySelectorAll(selector);
+      for (const idx of stillFailed) {
         if (scanState.stopRequested) break;
 
         const info = elements[idx];
         const pageNum = idx + 1;
 
-        scanState.showBanner(`🔄 Retry ${pageNum}/${total}`);
-        scanState.highlight(info.element, pageNum, total);
+        let alternative = null;
+        let minDist = Infinity;
 
-        const url = await captureElement(info, pageNum, true);
-
-        // ✅ FIX DUPLICATE: Check duplikat lagi
-        if (url && !usedUrls.has(url)) {
-          usedUrls.add(url);
-          capturedUrls[idx] = url;
-          capturedMeta[idx] = {
-            index: idx, pageNum, y: info.y,
-            isBlob: url.startsWith('blob:'), retry: 1,
-          };
-          successCount++;
-          log(`[${pageNum}] ✅ RETRY OK`);
-        } else if (url) {
-          log(`[${pageNum}] ⚠️ RETRY duplicate skipped`);
-          stillFailed.push(idx);
-        } else {
-          stillFailed.push(idx);
-        }
-      }
-
-      scanState.removeHighlight();
-
-      // FINAL ATTEMPT
-      if (stillFailed.length > 0 && !scanState.stopRequested) {
-        log(`FINAL ATTEMPT: ${stillFailed.length}`);
-        scanState.showBanner(`🎯 Final: ${stillFailed.length}...`);
-
-        const allImgs = document.querySelectorAll(selector);
-        for (const idx of stillFailed) {
-          if (scanState.stopRequested) break;
-
-          const info = elements[idx];
-          const pageNum = idx + 1;
-
-          // Cari element dengan Y terdekat & belum di-used
-          let alternative = null;
-          let minDist = Infinity;
-
-          allImgs.forEach(img => {
-            const y = scrollContainer.getElementY(img);
-            const dist = Math.abs(y - info.y);
-            if (dist < minDist && dist < 500) {
-              // Check jika URL element ini belum dipakai
-              const url = getBestImageUrl(img);
-              if (url && !usedUrls.has(url)) {
-                minDist = dist;
-                alternative = img;
-              }
-            }
-          });
-
-          if (alternative) {
-            info.element = alternative;
-            scanState.highlight(alternative, pageNum, total);
-
-            const targetY = scrollContainer.getElementY(alternative);
-            await smoothScrollTo(Math.max(0, targetY - CONFIG.scrollOffset));
-            await sleep(500);
-            forceLazyLoad([alternative]);
-            await waitForImageLoad(alternative, 4000);
-
-            const url = getBestImageUrl(alternative);
+        allImgs.forEach(img => {
+          const y = scrollContainer.getElementY(img);
+          const dist = Math.abs(y - info.y);
+          if (dist < minDist && dist < 500) {
+            const url = getBestImageUrl(img);
             if (url && !usedUrls.has(url)) {
-              usedUrls.add(url);
-              capturedUrls[idx] = url;
-              capturedMeta[idx] = {
-                index: idx, pageNum, y: info.y,
-                isBlob: url.startsWith('blob:'), retry: 2,
-              };
-              successCount++;
-              log(`[${pageNum}] ✅ FINAL OK`);
+              minDist = dist;
+              alternative = img;
             }
           }
+        });
+
+        if (alternative) {
+          info.element = alternative;
+          scanState.highlight(alternative, pageNum, total);
+
+          const targetY = scrollContainer.getElementY(alternative);
+          await smoothScrollTo(Math.max(0, targetY - CONFIG.scrollOffset));
+          await sleep(400);
+          forceLazyLoad([alternative]);
+          await waitForImageLoad(alternative, 3000);
+
+          const url = getBestImageUrl(alternative);
+          if (url && !usedUrls.has(url)) {
+            usedUrls.add(url);
+            capturedUrls[idx] = url;
+            capturedMeta[idx] = {
+              index: idx, pageNum, y: info.y,
+              isBlob: url.startsWith('blob:'), retry: 2,
+            };
+            successCount++;
+          }
         }
-        scanState.removeHighlight();
       }
+      scanState.removeHighlight();
     }
-
-    // ✅ FINAL DEDUPE: Extra safety - remove null & dedupe
-    const finalUrls = [];
-    const finalMeta = [];
-    const finalUrlCheck = new Set();
-
-    for (let i = 0; i < capturedUrls.length; i++) {
-      const url = capturedUrls[i];
-      if (url && !finalUrlCheck.has(url)) {
-        finalUrlCheck.add(url);
-        finalUrls.push(url);
-        finalMeta.push(capturedMeta[i]);
-      }
-    }
-
-    const finalFailed = total - finalUrls.length;
-    log(`═══════════════════════════════════`);
-    log(`FINAL: ${finalUrls.length}/${total} unique, ${finalFailed} missed`);
-    log(`Duplicates prevented: ${successCount - finalUrls.length}`);
-    log(`═══════════════════════════════════`);
-
-    return {
-      urls: finalUrls,
-      meta: finalMeta,
-      total,
-      success: finalUrls.length,
-      failed: finalFailed,
-    };
   }
+
+  // Final dedupe
+  const finalUrls = [];
+  const finalMeta = [];
+  const finalUrlCheck = new Set();
+
+  for (let i = 0; i < capturedUrls.length; i++) {
+    const url = capturedUrls[i];
+    if (url && !finalUrlCheck.has(url)) {
+      finalUrlCheck.add(url);
+      finalUrls.push(url);
+      finalMeta.push(capturedMeta[i]);
+    }
+  }
+
+  return {
+    urls: finalUrls,
+    meta: finalMeta,
+    total,
+    success: finalUrls.length,
+    failed: total - finalUrls.length,
+  };
+}
 
   /* ══════════════════════════════════════
      Main Scan Flow
@@ -1040,26 +1013,51 @@ log(`Deduplication: ${rawElements.length} → ${dedupedByY.length}`);
      Fetch image
      ══════════════════════════════════════ */
 
-  async function fetchImageAsArray(url) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+/**
+ * ⚡ OPTIMIZED: Fetch dengan smart size limiting & timeout
+ */
+async function fetchImageAsArray(url) {
+  try {
+    // AbortController untuk timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      const array = Array.from(uint8Array);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
 
-      return {
-        success: true,
-        data: array,
-        mimeType: blob.type,
-        size: blob.size,
-      };
-    } catch (error) {
-      return { success: false, error: error.message };
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const blob = await response.blob();
+
+    // ⚡ Skip conversion untuk file terlalu besar (>20MB)
+    if (blob.size > 20 * 1024 * 1024) {
+      throw new Error(`File too large: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
     }
+
+    // ⚡ Direct ArrayBuffer conversion (no intermediate array copy)
+    const arrayBuffer = await blob.arrayBuffer();
+
+    // ⚡ Use plain array only if necessary (Chrome message API constraint)
+    // Faster than Array.from() for large arrays
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const array = new Array(uint8Array.length);
+    for (let i = 0; i < uint8Array.length; i++) {
+      array[i] = uint8Array[i];
+    }
+
+    return {
+      success: true,
+      data: array,
+      mimeType: blob.type,
+      size: blob.size,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.name === 'AbortError' ? 'Timeout' : error.message,
+    };
   }
+}
 
   function debugScan() {
     return {
@@ -1080,60 +1078,80 @@ log(`Deduplication: ${rawElements.length} → ${dedupedByY.length}`);
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.action) {
 
-      case 'SCAN_IMAGES': {
-        (async () => {
-          try {
-            scanState.start();
+case 'SCAN_IMAGES': {
+  (async () => {
+    try {
+      scanState.start();
 
-            if (message.speed) {
-              const speedMap = {
-                slow:   { scrollPxPerFrame: 12, scrollSettleTime: 250, imageLoadTimeout: 5000, imageLoadCheckInterval: 80 },
-                normal: { scrollPxPerFrame: 25, scrollSettleTime: 120, imageLoadTimeout: 3000, imageLoadCheckInterval: 50 },
-                fast:   { scrollPxPerFrame: 40, scrollSettleTime: 80,  imageLoadTimeout: 2000, imageLoadCheckInterval: 40 },
-                turbo:  { scrollPxPerFrame: 70, scrollSettleTime: 50,  imageLoadTimeout: 1500, imageLoadCheckInterval: 30 },
-              };
-              const preset = speedMap[message.speed];
-              if (preset) Object.assign(CONFIG, preset);
-            }
-
-            const result = await performScan(message.customSelector || '');
-            scanState.finish();
-
-            const title = detectChapterTitle();
-
-            const images = result?.images || [];
-            const meta = result?.meta || [];
-            const totalCount = result?.total || images.length;
-            const failedCount = result?.failed || 0;
-
-            let debugInfo = null;
-            if (images.length === 0) debugInfo = debugScan();
-
-            sendResponse({
-              success: true,
-              images: images,
-              meta: meta,
-              title: title || 'Manhwa-Chapter',
-              count: images.length,
-              total: totalCount,
-              failed: failedCount,
-              url: window.location.href,
-              debug: debugInfo,
-              stopped: result?.stopped || false,
-            });
-          } catch (error) {
-            log('SCAN ERROR:', error);
-            scanState.finish();
-            sendResponse({
-              success: false,
-              error: error.message || 'Unknown error',
-              images: [], meta: [],
-              count: 0, total: 0, failed: 0,
-            });
-          }
-        })();
-        return true;
+      if (message.speed) {
+        // ⚡ OPTIMIZED PRESETS
+        const speedMap = {
+          slow: {
+            scrollPxPerFrame: 15,
+            scrollSettleTime: 200,
+            imageLoadTimeout: 4000,
+            imageLoadCheckInterval: 60,
+          },
+          normal: {
+            scrollPxPerFrame: 30,      // ⚡ 25 → 30
+            scrollSettleTime: 100,      // ⚡ 120 → 100
+            imageLoadTimeout: 2500,     // ⚡ 3000 → 2500
+            imageLoadCheckInterval: 40, // ⚡ 50 → 40
+          },
+          fast: {
+            scrollPxPerFrame: 50,      // ⚡ 40 → 50
+            scrollSettleTime: 60,       // ⚡ 80 → 60
+            imageLoadTimeout: 1800,     // ⚡ 2000 → 1800
+            imageLoadCheckInterval: 30, // ⚡ 40 → 30
+          },
+          turbo: {
+            scrollPxPerFrame: 90,      // ⚡ 70 → 90
+            scrollSettleTime: 40,       // ⚡ 50 → 40
+            imageLoadTimeout: 1200,     // ⚡ 1500 → 1200
+            imageLoadCheckInterval: 20, // ⚡ 30 → 20
+          },
+        };
+        const preset = speedMap[message.speed];
+        if (preset) Object.assign(CONFIG, preset);
       }
+
+      const result = await performScan(message.customSelector || '');
+      scanState.finish();
+
+      const title = detectChapterTitle();
+      const images = result?.images || [];
+      const meta = result?.meta || [];
+      const totalCount = result?.total || images.length;
+      const failedCount = result?.failed || 0;
+
+      let debugInfo = null;
+      if (images.length === 0) debugInfo = debugScan();
+
+      sendResponse({
+        success: true,
+        images: images,
+        meta: meta,
+        title: title || 'Manhwa-Chapter',
+        count: images.length,
+        total: totalCount,
+        failed: failedCount,
+        url: window.location.href,
+        debug: debugInfo,
+        stopped: result?.stopped || false,
+      });
+    } catch (error) {
+      log('SCAN ERROR:', error);
+      scanState.finish();
+      sendResponse({
+        success: false,
+        error: error.message || 'Unknown error',
+        images: [], meta: [],
+        count: 0, total: 0, failed: 0,
+      });
+    }
+  })();
+  return true;
+}
 
       case 'STOP_SCAN': {
         scanState.stop();
