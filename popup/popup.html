@@ -67,12 +67,16 @@
 
         <div class="settings-grid">
           <div class="field">
-            <label for="namingFormat" class="field-label field-label-sm">Numbering</label>
-            <select id="namingFormat" class="input select">
-              <option value="2digit">01, 02, 03</option>
-              <option value="3digit" selected>001, 002, 003</option>
-            </select>
-          </div>
+  <label for="namingFormat" class="field-label field-label-sm">Numbering</label>
+  <select id="namingFormat" class="input select">
+    <option value="auto" selected>✨ Auto (smart)</option>
+    <option value="1digit">1, 2, 3</option>
+    <option value="2digit">01, 02, 03</option>
+    <option value="3digit">001, 002, 003</option>
+    <option value="4digit">0001, 0002</option>
+  </select>
+  <span class="field-hint" id="formatHint">Auto-detect digit count</span>
+</div>
 
           <div class="field">
             <label for="scanSpeed" class="field-label field-label-sm">Speed</label>

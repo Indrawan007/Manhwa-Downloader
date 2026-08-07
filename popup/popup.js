@@ -1,6 +1,6 @@
 /**
  * Popup Controller - Manhwa Downloader
- * Sequential auto-capture with real-time progress
+ * Auto-download after scan complete
  */
 
 (() => {
@@ -12,6 +12,7 @@
   const $appStatus      = $('appStatus');
   const $chapterName    = $('chapterName');
   const $namingFormat   = $('namingFormat');
+  const $formatHint     = $('formatHint');
   const $scanSpeed      = $('scanSpeed');
   const $imageSelector  = $('imageSelector');
   const $btnScan        = $('btnScan');
@@ -43,11 +44,13 @@
   let isScanning = false;
   let activeTabId = null;
 
-  /* ── Utils ── */
+  /* ══════════════════════════════════════
+     Utilities
+     ══════════════════════════════════════ */
 
   async function getActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) throw new Error('Tidak ada tab aktif');
+    if (!tab?.id) throw new Error('No active tab');
     return tab;
   }
 
@@ -60,7 +63,7 @@
         target: { tabId: tab.id },
         files: ['content/content.js'],
       });
-    } catch { /* injected */ }
+    } catch { /* already injected */ }
 
     return chrome.tabs.sendMessage(tab.id, message);
   }
@@ -79,11 +82,12 @@
     `;
   }
 
-  function showStatus(text, type = 'info') {
-    $statusMessage.innerHTML = text;
-    $statusMessage.className = `status-message ${type}`;
+  function showStatus(html, type = 'info', autoHide = true) {
+    $statusMessage.innerHTML = html;
+    $statusMessage.className = `alert ${type}`;
     $statusMessage.classList.remove('hidden');
-    if (type !== 'error') {
+
+    if (autoHide && type !== 'error') {
       setTimeout(() => $statusMessage.classList.add('hidden'), 8000);
     }
   }
@@ -93,10 +97,24 @@
     if (text) $progressText.textContent = text;
   }
 
-  function padNumber(num, format) {
-    return format === '3digit'
-      ? String(num).padStart(3, '0')
-      : String(num).padStart(2, '0');
+  /**
+   * ✨ Smart pad number - auto detect digit dari total
+   */
+  function padNumber(num, format, total = 0) {
+    if (format === 'auto') {
+      const digits = Math.max(2, String(total).length);
+      return String(num).padStart(digits, '0');
+    }
+
+    const digitMap = {
+      '1digit': 1,
+      '2digit': 2,
+      '3digit': 3,
+      '4digit': 4,
+    };
+
+    const digits = digitMap[format] || 3;
+    return String(num).padStart(digits, '0');
   }
 
   function getFileExtension(url, mimeType = '') {
@@ -144,13 +162,48 @@
     });
 
     if (!response?.success) {
-      throw new Error(response?.error || 'Fetch gagal');
+      throw new Error(response?.error || 'Fetch failed');
     }
 
     return {
       blob: base64ToBlob(response.base64),
       mimeType: response.mimeType,
     };
+  }
+
+  /**
+   * ✨ Update format hint dinamis
+   */
+  function updateFormatHint() {
+    if (!$formatHint) return;
+
+    const format = $namingFormat.value;
+    const total = scannedImages.length;
+
+    if (total === 0) {
+      const hints = {
+        'auto':   'Auto-detect digit count',
+        '1digit': 'Example: 1.jpg, 2.jpg, 3.jpg',
+        '2digit': 'Example: 01.jpg, 02.jpg, 03.jpg',
+        '3digit': 'Example: 001.jpg, 002.jpg',
+        '4digit': 'Example: 0001.jpg, 0002.jpg',
+      };
+      $formatHint.textContent = hints[format] || '';
+      $formatHint.classList.remove('active');
+      return;
+    }
+
+    const first = padNumber(1, format, total);
+    const last = padNumber(total, format, total);
+
+    if (format === 'auto') {
+      const digits = Math.max(2, String(total).length);
+      $formatHint.textContent = `✨ ${digits}-digit → ${first} to ${last}`;
+      $formatHint.classList.add('active');
+    } else {
+      $formatHint.textContent = `Preview: ${first} → ${last}`;
+      $formatHint.classList.add('active');
+    }
   }
 
   /* ══════════════════════════════════════
@@ -162,16 +215,16 @@
       const { phase, percent, collected, current, total, message: msg } = message.data;
 
       const phaseText = {
-        discovery: '🔍 DISCOVERY (Cari halaman)',
-        capture:   '📸 CAPTURE (Scroll & simpan)',
-      }[phase] || phase.toUpperCase();
+        discovery: 'Discovery',
+        capture:   'Capturing',
+      }[phase] || phase;
 
       $scanPhase.textContent = phaseText;
 
       if (phase === 'capture' && current && total) {
-        $scanCollected.textContent = `${collected}/${total}`;
+        $scanCollected.textContent = `${collected} / ${total}`;
       } else {
-        $scanCollected.textContent = `${collected} gambar`;
+        $scanCollected.textContent = `${collected}`;
       }
 
       $scanProgressFill.style.width = `${percent}%`;
@@ -181,37 +234,44 @@
   });
 
   /* ══════════════════════════════════════
-     Scan
+     Scan + Auto Download
      ══════════════════════════════════════ */
 
   async function scanImages() {
-    if (isScanning) return;
+    if (isScanning || isDownloading) return;
 
     isScanning = true;
+    setAppStatus('Scanning', 'warning');
+
+    // UI: show progress, hide others
     $btnScan.disabled = true;
     $btnScan.classList.add('hidden');
     $btnStop.classList.remove('hidden');
+    if ($btnTestScroll) $btnTestScroll.style.display = 'none';
     $scanProgress.classList.remove('hidden');
     $previewArea.classList.add('hidden');
     $btnDownload.classList.add('hidden');
     $statusMessage.classList.add('hidden');
+    $progressBar.classList.add('hidden');
 
-    $scanPhase.textContent = '🚀 Memulai...';
-    $scanCollected.textContent = '0 gambar';
+    // Reset progress display
+    $scanPhase.textContent = 'Starting';
+    $scanCollected.textContent = '0';
     $scanProgressFill.style.width = '0%';
     $scanPercent.textContent = '0%';
     $scanMessage.textContent = 'Preparing...';
 
+    let scanSuccess = false;
+
     try {
-      // Ganti bagian ini di scanImages():
-const response = await sendToContentScript({
-  action: 'SCAN_IMAGES',
-  customSelector: $imageSelector.value.trim(),
-  speed: $scanSpeed.value,  // ✅ TAMBAH INI
-});
+      const response = await sendToContentScript({
+        action: 'SCAN_IMAGES',
+        customSelector: $imageSelector.value.trim(),
+        speed: $scanSpeed.value,
+      });
 
       if (!response?.success && response?.count === 0) {
-        throw new Error(response?.error || 'Gagal scan');
+        throw new Error(response?.error || 'Scan failed');
       }
 
       scannedImages = response.images || [];
@@ -221,42 +281,76 @@ const response = await sendToContentScript({
         $chapterName.value = response.title;
       }
 
-      const blobCount = scannedImages.filter(u => u.startsWith('blob:')).length;
-      const httpCount = scannedImages.length - blobCount;
-
-      $imageCount.textContent = `${scannedImages.length} gambar ditemukan`;
-      $previewArea.classList.remove('hidden');
+      $imageCount.textContent = `${scannedImages.length} image${scannedImages.length !== 1 ? 's' : ''}`;
 
       if (scannedImages.length > 0) {
-        $btnDownload.classList.remove('hidden');
-        $btnDownload.disabled = false;
+        scanSuccess = true;
+        updateFormatHint();
+
+        // Hide scan progress, show preview
+        $scanProgress.classList.add('hidden');
+        $previewArea.classList.remove('hidden');
         renderPreview();
 
-        let msg;
-        if (response.stopped) {
-          msg = `⏹ Dihentikan. Berhasil capture <b>${scannedImages.length}</b> gambar`;
-        } else if (response.total && response.total > scannedImages.length) {
-          msg = `⚠️ Capture <b>${scannedImages.length}/${response.total}</b> gambar (${response.failed} miss)`;
-        } else {
-          msg = `✅ Berhasil capture <b>${scannedImages.length}</b> gambar`;
-        }
+        setAppStatus(`${scannedImages.length} found`, 'success');
+
+        // ✨ AUTO DOWNLOAD - langsung mulai
+        const blobCount = scannedImages.filter(u => u.startsWith('blob:')).length;
+        const httpCount = scannedImages.length - blobCount;
+
+        let scanMsg = response.stopped
+          ? `<b>Scan stopped.</b> Captured <b>${scannedImages.length}</b> images.`
+          : `<b>Scan complete!</b> Found <b>${scannedImages.length}</b> images.`;
 
         if (blobCount > 0) {
-          msg += `<br><small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
+          scanMsg += `<small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
         }
 
-        showStatus(msg, response.stopped || response.failed > 0 ? 'info' : 'success');
+        scanMsg += `<br><small>⬇️ Starting auto-download...</small>`;
+        showStatus(scanMsg, 'success', false);
+
+        // Reset scan state before download
+        isScanning = false;
+        $btnScan.classList.remove('hidden');
+        $btnStop.classList.add('hidden');
+        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+
+        // Wait sebentar biar user sempat lihat hasil scan
+        await new Promise(r => setTimeout(r, 800));
+
+        // ✨ AUTO TRIGGER DOWNLOAD
+        await downloadAndZip();
+
       } else {
-        showStatus('⚠️ Tidak ada gambar ditemukan. Cek Console (F12).', 'error');
+        setAppStatus('No images', 'danger');
+        showStatus('<b>No images found.</b> Check console (F12) for details.', 'error');
       }
     } catch (error) {
-      showStatus(`❌ Error: ${error.message}`, 'error');
+      setAppStatus('Error', 'danger');
+      showStatus(`<b>Error:</b> ${error.message}`, 'error');
     } finally {
-      isScanning = false;
+      // Reset scan UI (jika belum ter-reset)
+      if (isScanning) {
+        isScanning = false;
+        $btnScan.disabled = false;
+        $btnScan.classList.remove('hidden');
+        $btnStop.classList.add('hidden');
+        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+        $scanProgress.classList.add('hidden');
+      }
+
       $btnScan.disabled = false;
-      $btnScan.classList.remove('hidden');
-      $btnStop.classList.add('hidden');
-      $scanProgress.classList.add('hidden');
+
+      // Show download button jika ada gambar (untuk re-download)
+      if (scanSuccess && scannedImages.length > 0) {
+        $btnDownload.classList.remove('hidden');
+        $btnDownload.disabled = false;
+        // Update button text
+        const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
+        if ($btnDownloadText) {
+          $btnDownloadText.textContent = 'Download Again';
+        }
+      }
     }
   }
 
@@ -264,7 +358,8 @@ const response = await sendToContentScript({
     if (!isScanning) return;
 
     $btnStop.disabled = true;
-    $btnStop.innerHTML = '⏹ Stopping...';
+    const $stopText = $btnStop.querySelector('span:last-child');
+    if ($stopText) $stopText.textContent = 'Stopping...';
 
     try {
       await chrome.tabs.sendMessage(activeTabId, { action: 'STOP_SCAN' });
@@ -272,8 +367,38 @@ const response = await sendToContentScript({
 
     setTimeout(() => {
       $btnStop.disabled = false;
-      $btnStop.innerHTML = '⏹ Stop';
+      if ($stopText) $stopText.textContent = 'Stop';
     }, 1000);
+  }
+
+  /* ══════════════════════════════════════
+     Test Scroll
+     ══════════════════════════════════════ */
+
+  async function testScroll() {
+    setAppStatus('Testing', 'info');
+    try {
+      const result = await sendToContentScript({ action: 'TEST_SCROLL' });
+
+      if (result?.success) {
+        const success = result.moved > 100;
+        const info = `
+          <b>Scroll Compatibility Test</b><br><br>
+          📦 Container: <code>${result.containerType}</code><br>
+          📏 Total height: <b>${result.scrollHeight}px</b><br>
+          📐 Max scroll: <b>${result.maxScrollY}px</b><br>
+          🎯 Test moved: <b>${result.moved}px</b><br><br>
+          ${success 
+            ? '✅ <b>Compatible!</b> Auto-scroll will work.' 
+            : '❌ <b>Not compatible.</b> This site uses custom scroll handling.'}
+        `;
+        showStatus(info, success ? 'success' : 'error');
+        setAppStatus(success ? 'Compatible' : 'Not compatible', success ? 'success' : 'danger');
+      }
+    } catch (error) {
+      showStatus(`<b>Test failed:</b> ${error.message}`, 'error');
+      setAppStatus('Error', 'danger');
+    }
   }
 
   /* ══════════════════════════════════════
@@ -282,6 +407,7 @@ const response = await sendToContentScript({
 
   function renderPreview() {
     const format = $namingFormat.value;
+    const total = scannedImages.length;
     $previewGrid.innerHTML = '';
 
     const limit = Math.min(scannedImages.length, 50);
@@ -297,16 +423,16 @@ const response = await sendToContentScript({
         img.src = 'data:image/svg+xml,' + encodeURIComponent(
           '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
           '<rect fill="#6c5ce7" width="60" height="80"/>' +
-          '<text x="30" y="38" text-anchor="middle" fill="white" font-size="8">BLOB</text>' +
-          '<text x="30" y="52" text-anchor="middle" fill="white" font-size="8">IMG</text></svg>'
+          '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
+          '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
         );
       } else {
         img.src = url;
         img.onerror = () => {
           img.src = 'data:image/svg+xml,' + encodeURIComponent(
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-            '<rect fill="#2a2a4a" width="60" height="80"/>' +
-            '<text x="30" y="44" text-anchor="middle" fill="#666" font-size="10">ERR</text></svg>'
+            '<rect fill="#2d2d4f" width="60" height="80"/>' +
+            '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
           );
         };
       }
@@ -316,7 +442,7 @@ const response = await sendToContentScript({
 
       const idx = document.createElement('span');
       idx.className = 'thumb-index';
-      idx.textContent = padNumber(i + 1, format);
+      idx.textContent = padNumber(i + 1, format, total);
 
       thumb.append(img, idx);
       $previewGrid.appendChild(thumb);
@@ -325,7 +451,15 @@ const response = await sendToContentScript({
     if (scannedImages.length > limit) {
       const more = document.createElement('div');
       more.className = 'preview-thumb';
-      more.style.cssText = 'display:flex;align-items:center;justify-content:center;background:var(--bg-input);font-size:11px;color:var(--text-muted);';
+      more.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-surface-3);
+        font-size: var(--font-size-md);
+        color: var(--color-text-2);
+        font-weight: 700;
+      `;
       more.textContent = `+${scannedImages.length - limit}`;
       $previewGrid.appendChild(more);
     }
@@ -339,20 +473,23 @@ const response = await sendToContentScript({
     if (isDownloading || scannedImages.length === 0) return;
 
     isDownloading = true;
+    setAppStatus('Downloading', 'info');
     const format = $namingFormat.value;
+    const total = scannedImages.length;
     const chapterName = sanitizeFilename($chapterName.value || 'manhwa-chapter');
 
+    // UI: loading state
+    $btnDownload.classList.remove('hidden');
     $btnDownload.disabled = true;
     $btnScan.disabled = true;
     $btnText.classList.add('hidden');
     $btnLoading.classList.remove('hidden');
     $progressBar.classList.remove('hidden');
-    $statusMessage.classList.add('hidden');
-    updateProgress(0, 'Memulai...');
+
+    updateProgress(0, 'Starting...');
 
     const zip = new JSZip();
     const folder = zip.folder(chapterName);
-    const total = scannedImages.length;
     let completed = 0;
     let failed = 0;
 
@@ -365,7 +502,7 @@ const response = await sendToContentScript({
         await Promise.allSettled(
           batch.map(async (url, batchIdx) => {
             const globalIdx = i + batchIdx;
-            const pageNum = padNumber(globalIdx + 1, format);
+            const pageNum = padNumber(globalIdx + 1, format, total);
 
             try {
               let blob, mimeType;
@@ -395,31 +532,31 @@ const response = await sendToContentScript({
               folder.file(`${pageNum}${ext}`, blob);
             } catch (err) {
               failed++;
-              console.warn(`[ManhwaDL] Gagal ${globalIdx + 1}:`, url, err.message);
+              console.warn(`[ManhwaDL] Failed ${globalIdx + 1}:`, url, err.message);
             }
           })
         );
 
         completed += batch.length;
         const pct = Math.round((completed / total) * 80);
-        updateProgress(pct, `Mengunduh ${Math.min(completed, total)}/${total}...`);
+        updateProgress(pct, `${Math.min(completed, total)}/${total}`);
       }
 
       if (completed - failed === 0) {
-        throw new Error('Semua gambar gagal diunduh.');
+        throw new Error('All images failed to download.');
       }
 
-      updateProgress(85, 'Membuat ZIP...');
+      updateProgress(85, 'Creating ZIP...');
 
       const zipBlob = await zip.generateAsync(
         { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
         (meta) => {
           const zipPct = 85 + Math.round(meta.percent * 0.15);
-          updateProgress(zipPct, `Kompresi... ${Math.round(meta.percent)}%`);
+          updateProgress(zipPct, `Compressing ${Math.round(meta.percent)}%`);
         }
       );
 
-      updateProgress(100, 'Menyimpan...');
+      updateProgress(100, 'Saving...');
       const blobUrl = URL.createObjectURL(zipBlob);
       const filename = `${chapterName}.zip`;
 
@@ -431,13 +568,16 @@ const response = await sendToContentScript({
 
       setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
 
+      setAppStatus('Downloaded', 'success');
+
       const msg = failed > 0
-        ? `✅ Selesai! ${total - failed}/${total} berhasil. ${failed} gagal.`
-        : `✅ Berhasil! ${total} gambar → ${filename}`;
-      showStatus(msg, failed > 0 ? 'info' : 'success');
+        ? `✅ <b>Downloaded ${total - failed}/${total}</b> images<br><small>${failed} failed to fetch</small><br><small>📦 <code>${filename}</code></small>`
+        : `✅ <b>Success!</b> ${total} images saved<br><small>📦 <code>${filename}</code></small>`;
+      showStatus(msg, failed > 0 ? 'warning' : 'success', false);
 
     } catch (error) {
-      showStatus(`❌ Gagal: ${error.message}`, 'error');
+      setAppStatus('Error', 'danger');
+      showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
     } finally {
       isDownloading = false;
       $btnDownload.disabled = false;
@@ -446,6 +586,12 @@ const response = await sendToContentScript({
       $btnLoading.classList.add('hidden');
       $progressBar.classList.add('hidden');
       updateProgress(0, '');
+
+      // Update button text jadi "Download Again"
+      const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
+      if ($btnDownloadText) {
+        $btnDownloadText.textContent = 'Download Again';
+      }
     }
   }
 
@@ -453,41 +599,19 @@ const response = await sendToContentScript({
      Events
      ══════════════════════════════════════ */
 
-$btnTestScroll.addEventListener('click', async () => {
-  try {
-    const result = await sendToContentScript({ action: 'TEST_SCROLL' });
-    
-    if (result?.success) {
-      const info = `
-        🧪 <b>Scroll Test Result:</b><br><br>
-        📦 Container type: <b>${result.containerType}</b><br>
-        📏 Scroll height: <b>${result.scrollHeight}px</b><br>
-        📐 Max scroll Y: <b>${result.maxScrollY}px</b><br>
-        🎯 Test scroll:<br>
-        &nbsp;&nbsp;• Before: ${result.beforeY}px<br>
-        &nbsp;&nbsp;• After: ${result.afterY}px<br>
-        &nbsp;&nbsp;• Moved: <b>${result.moved}px</b><br><br>
-        ${result.moved > 100 
-          ? '✅ Scroll <b>BERFUNGSI!</b>' 
-          : '❌ Scroll <b>TIDAK BEKERJA!</b><br>Halaman menggunakan custom scroll yang perlu approach berbeda.'}
-      `;
-      showStatus(info, result.moved > 100 ? 'success' : 'error');
-    }
-  } catch (error) {
-    showStatus(`❌ Test error: ${error.message}`, 'error');
-  }
-});
-
   $btnScan.addEventListener('click', scanImages);
   $btnStop.addEventListener('click', stopScan);
+  if ($btnTestScroll) $btnTestScroll.addEventListener('click', testScroll);
   $btnDownload.addEventListener('click', downloadAndZip);
 
   $btnToggle.addEventListener('click', () => {
-    const hidden = $previewGrid.classList.toggle('hidden');
-    $btnToggle.textContent = hidden ? 'Lihat Preview' : 'Sembunyikan';
+    const isHidden = $previewGrid.classList.toggle('hidden');
+    $toggleText.textContent = isHidden ? 'Show' : 'Hide';
+    $btnToggle.classList.toggle('active', !isHidden);
   });
 
   $namingFormat.addEventListener('change', () => {
+    updateFormatHint();
     if (scannedImages.length > 0) renderPreview();
   });
 
@@ -498,7 +622,13 @@ $btnTestScroll.addEventListener('click', async () => {
   (async function init() {
     try {
       const res = await sendToContentScript({ action: 'GET_TITLE' });
-      if (res?.success && res.title) $chapterName.value = res.title;
-    } catch { /* silent */ }
+      if (res?.success && res.title) {
+        $chapterName.value = res.title;
+      }
+      setAppStatus('Ready', 'success');
+    } catch {
+      setAppStatus('No access', 'warning');
+    }
+    updateFormatHint();
   })();
 })();

@@ -876,3 +876,19 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Field Hint */
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  font-style: italic;
+  transition: color var(--transition-base);
+}
+
+.field-hint.active {
+  color: var(--color-primary-400);
+  font-style: normal;
+  font-weight: 600;
+}
