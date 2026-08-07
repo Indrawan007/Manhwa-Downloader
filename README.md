@@ -1,2 +1,0 @@
-# Manhwa-Downloader
-# Manhwa-Downloader
