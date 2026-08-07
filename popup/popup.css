@@ -892,3 +892,34 @@ body {
   font-style: normal;
   font-weight: 600;
 }
+
+/* ⚡ Turbo indicator */
+.turbo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: linear-gradient(135deg, #ffb800, #ff5566);
+  color: white;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  border-radius: var(--radius-full);
+  animation: turbo-pulse 1.5s infinite;
+  margin-left: var(--space-2);
+}
+
+@keyframes turbo-pulse {
+  0%, 100% { 
+    box-shadow: 0 0 8px rgba(255, 184, 0, 0.5); 
+    transform: scale(1);
+  }
+  50% { 
+    box-shadow: 0 0 16px rgba(255, 85, 102, 0.8); 
+    transform: scale(1.05);
+  }
+}
+
+/* Faster progress bar animation */
+.progress-fill-animated {
+  animation-duration: 1s !important;
+}

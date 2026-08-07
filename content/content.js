@@ -12,14 +12,15 @@
   /* ══════════════════════════════════════
      Config
      ══════════════════════════════════════ */
-  const CONFIG = {
-    scrollPxPerFrame: 15,
-    scrollSettleTime: 300,
-    imageLoadTimeout: 6000,
-    imageLoadCheckInterval: 100,
-    discoveryScrollPxPerFrame: 40,
-    scrollOffset: 100,
-  };
+    const CONFIG = {
+      // ⚡ TURBO CONFIG - dioptimalkan untuk kecepatan
+      scrollPxPerFrame: 25,           // 15 → 25 (lebih cepat scroll)
+      scrollSettleTime: 120,           // 300 → 120 (kurangi wait)
+      imageLoadTimeout: 3000,          // 6000 → 3000 (fail lebih cepat)
+      imageLoadCheckInterval: 50,      // 100 → 50 (cek lebih sering)
+      discoveryScrollPxPerFrame: 60,   // 40 → 60 (discovery cepat)
+      scrollOffset: 100,
+    };
 
   /* ══════════════════════════════════════
      Selectors
@@ -603,7 +604,7 @@ async function discoveryPhase(customSelector, onProgress) {
     scanState.showBanner(`🔍 Discovery: ${positionSet.size} halaman ditemukan`);
 
     await smoothScrollTo(currentPos, CONFIG.discoveryScrollPxPerFrame);
-    await sleep(200);
+    await sleep(80);  // ⚡ 200 → 80
     collectPositions();
 
     if (onProgress) {
@@ -628,12 +629,12 @@ async function discoveryPhase(customSelector, onProgress) {
     }
   }
 
-  await sleep(500);
-  collectPositions();
+    await sleep(200);  // ⚡ 500 → 200
+    collectPositions();
 
-  scanState.showBanner('⬆️ Kembali ke atas...');
-  await smoothScrollTo(0, 60);
-  await sleep(500);
+    scanState.showBanner('⬆️ Kembali ke atas...');
+    await smoothScrollTo(0, 100);  // ⚡ 60 → 100 (naik lebih cepat)
+    await sleep(200);  // ⚡ 500 → 200
 
   // ✅ FIX: Final collect di atas untuk pastikan gambar #1 tertangkap
   collectPositions();
@@ -687,11 +688,11 @@ async function sequentialCapture(discoveryResult, onProgress) {
     await smoothScrollTo(scrollTargetY);
     await sleep(CONFIG.scrollSettleTime);
 
-    // ✅ FIX: Extra wait untuk gambar pertama (lazy load lebih lambat di atas)
+    // ⚡ Extra wait khusus gambar pertama (dikurangi)
     if (isFirstImage) {
-      await sleep(400);
+      await sleep(200);  // 400 → 200
       forceLazyLoad(document.querySelectorAll(selector));
-      await sleep(300);
+      await sleep(150);  // 300 → 150
     }
 
     const imgs = document.querySelectorAll(selector);
@@ -712,8 +713,9 @@ async function sequentialCapture(discoveryResult, onProgress) {
     });
 
     // Retry dengan tolerance lebih luas
+    // ⚡ Retry lebih cepat
     if (!targetImg) {
-      await sleep(200);
+      await sleep(100);  // 200 → 100
       const imgs2 = document.querySelectorAll(selector);
       const wideTolerance = isFirstImage ? 500 : 150;
 
@@ -800,7 +802,7 @@ async function sequentialCapture(discoveryResult, onProgress) {
       });
     }
 
-    await sleep(150);
+    await sleep(50);
   }
 
   scanState.removeHighlight();
@@ -832,24 +834,52 @@ async function sequentialCapture(discoveryResult, onProgress) {
      Fetch image
      ══════════════════════════════════════ */
 
-  async function fetchImageAsBase64(url) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    /**
+     * ⚡ Fetch image sebagai ArrayBuffer (lebih cepat dari base64)
+     * Transfer via Array (Chrome message API tidak support Blob langsung)
+     */
+    async function fetchImageAsArray(url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const blob = await response.blob();
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
+        const blob = await response.blob();
+        const arrayBuffer = await blob.arrayBuffer();
 
-      return { success: true, base64, mimeType: blob.type, size: blob.size };
-    } catch (error) {
-      return { success: false, error: error.message };
+        // Convert ArrayBuffer → Array (bisa di-transfer via message)
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const array = Array.from(uint8Array);
+
+        return {
+          success: true,
+          data: array,           // Array of bytes
+          mimeType: blob.type,
+          size: blob.size,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
     }
-  }
+
+    // Backward compat: keep base64 version
+    async function fetchImageAsBase64(url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const blob = await response.blob();
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        return { success: true, base64, mimeType: blob.type, size: blob.size };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    }
 
   /* ══════════════════════════════════════
      Debug
@@ -922,15 +952,34 @@ async function sequentialCapture(discoveryResult, onProgress) {
 
             if (message.speed) {
               const speedMap = {
-                slow:   { scrollPxPerFrame: 8,  scrollSettleTime: 500 },
-                normal: { scrollPxPerFrame: 15, scrollSettleTime: 300 },
-                fast:   { scrollPxPerFrame: 25, scrollSettleTime: 200 },
-                turbo:  { scrollPxPerFrame: 40, scrollSettleTime: 100 },
+                slow:   { 
+                  scrollPxPerFrame: 12, 
+                  scrollSettleTime: 250,
+                  imageLoadTimeout: 5000,
+                  imageLoadCheckInterval: 80,
+                },
+                normal: { 
+                  scrollPxPerFrame: 25, 
+                  scrollSettleTime: 120,
+                  imageLoadTimeout: 3000,
+                  imageLoadCheckInterval: 50,
+                },
+                fast:   { 
+                  scrollPxPerFrame: 40, 
+                  scrollSettleTime: 80,
+                  imageLoadTimeout: 2000,
+                  imageLoadCheckInterval: 40,
+                },
+                turbo:  { 
+                  scrollPxPerFrame: 70, 
+                  scrollSettleTime: 50,
+                  imageLoadTimeout: 1500,
+                  imageLoadCheckInterval: 30,
+                },
               };
               const preset = speedMap[message.speed];
               if (preset) {
-                CONFIG.scrollPxPerFrame = preset.scrollPxPerFrame;
-                CONFIG.scrollSettleTime = preset.scrollSettleTime;
+                Object.assign(CONFIG, preset);
               }
             }
 
@@ -974,13 +1023,14 @@ async function sequentialCapture(discoveryResult, onProgress) {
         return true;
       }
 
-      case 'FETCH_IMAGE': {
-        (async () => {
-          const result = await fetchImageAsBase64(message.url);
-          sendResponse(result);
-        })();
-        return true;
-      }
+        case 'FETCH_IMAGE': {
+          (async () => {
+            // ⚡ Gunakan array transfer (lebih cepat dari base64)
+            const result = await fetchImageAsArray(message.url);
+            sendResponse(result);
+          })();
+          return true;
+        }
 
       case 'GET_TITLE': {
         sendResponse({ success: true, title: detectChapterTitle() });

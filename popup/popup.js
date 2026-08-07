@@ -141,35 +141,49 @@
     return name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'manhwa-chapter';
   }
 
-  function base64ToBlob(base64Data) {
-    const [meta, data] = base64Data.split(',');
-    const mimeMatch = meta.match(/:(.*?);/);
-    const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+/**
+ * ⚡ Convert Array of bytes → Blob (lebih cepat dari base64)
+ */
+function arrayToBlob(dataArray, mimeType = 'image/jpeg') {
+  const uint8Array = new Uint8Array(dataArray);
+  return new Blob([uint8Array], { type: mimeType });
+}
 
-    const binary = atob(data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+/**
+ * ⚡ Fetch image via content script - pakai Array transfer
+ */
+async function fetchImageViaContentScript(url) {
+  const response = await chrome.tabs.sendMessage(activeTabId, {
+    action: 'FETCH_IMAGE',
+    url,
+  });
 
-    return new Blob([bytes], { type: mime });
+  if (!response?.success) {
+    throw new Error(response?.error || 'Fetch failed');
   }
 
-  async function fetchImageViaContentScript(url) {
-    const response = await chrome.tabs.sendMessage(activeTabId, {
-      action: 'FETCH_IMAGE',
-      url,
-    });
-
-    if (!response?.success) {
-      throw new Error(response?.error || 'Fetch failed');
-    }
-
+  // ⚡ Prefer array transfer (baru), fallback ke base64 (lama)
+  if (response.data) {
     return {
-      blob: base64ToBlob(response.base64),
+      blob: arrayToBlob(response.data, response.mimeType),
       mimeType: response.mimeType,
     };
   }
+
+  // Fallback untuk backward compat
+  const [meta, data] = response.base64.split(',');
+  const mimeMatch = meta.match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return {
+    blob: new Blob([bytes], { type: mime }),
+    mimeType: response.mimeType || mime,
+  };
+}
 
   /**
    * ✨ Update format hint dinamis
@@ -306,20 +320,20 @@
           scanMsg += `<small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
         }
 
-        scanMsg += `<br><small>⬇️ Starting auto-download...</small>`;
-        showStatus(scanMsg, 'success', false);
+scanMsg += `<br><small>⚡ Auto-downloading...</small>`;
+showStatus(scanMsg, 'success', false);
 
-        // Reset scan state before download
-        isScanning = false;
-        $btnScan.classList.remove('hidden');
-        $btnStop.classList.add('hidden');
-        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+// Reset scan state before download
+isScanning = false;
+$btnScan.classList.remove('hidden');
+$btnStop.classList.add('hidden');
+if ($btnTestScroll) $btnTestScroll.style.display = 'block';
 
-        // Wait sebentar biar user sempat lihat hasil scan
-        await new Promise(r => setTimeout(r, 800));
+// ⚡ Wait lebih pendek (800 → 300)
+await new Promise(r => setTimeout(r, 300));
 
-        // ✨ AUTO TRIGGER DOWNLOAD
-        await downloadAndZip();
+// ✨ AUTO TRIGGER DOWNLOAD
+await downloadAndZip();
 
       } else {
         setAppStatus('No images', 'danger');
@@ -493,68 +507,75 @@
     let completed = 0;
     let failed = 0;
 
-    try {
-      const batchSize = 3;
+try {
+  // ⚡ TURBO: 8 concurrent downloads (dari 3)
+  const batchSize = 8;
 
-      for (let i = 0; i < total; i += batchSize) {
-        const batch = scannedImages.slice(i, i + batchSize);
+  for (let i = 0; i < total; i += batchSize) {
+    const batch = scannedImages.slice(i, i + batchSize);
 
-        await Promise.allSettled(
-          batch.map(async (url, batchIdx) => {
-            const globalIdx = i + batchIdx;
-            const pageNum = padNumber(globalIdx + 1, format, total);
+    await Promise.allSettled(
+      batch.map(async (url, batchIdx) => {
+        const globalIdx = i + batchIdx;
+        const pageNum = padNumber(globalIdx + 1, format, total);
 
+        try {
+          let blob, mimeType;
+
+          if (url.startsWith('blob:')) {
+            const result = await fetchImageViaContentScript(url);
+            blob = result.blob;
+            mimeType = result.mimeType;
+          } else {
             try {
-              let blob, mimeType;
-
-              if (url.startsWith('blob:')) {
-                const result = await fetchImageViaContentScript(url);
-                blob = result.blob;
-                mimeType = result.mimeType;
-              } else {
-                try {
-                  const response = await fetch(url, {
-                    mode: 'cors',
-                    credentials: 'include',
-                    headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
-                  });
-                  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                  blob = await response.blob();
-                  mimeType = blob.type;
-                } catch {
-                  const result = await fetchImageViaContentScript(url);
-                  blob = result.blob;
-                  mimeType = result.mimeType;
-                }
-              }
-
-              const ext = getFileExtension(url, mimeType);
-              folder.file(`${pageNum}${ext}`, blob);
-            } catch (err) {
-              failed++;
-              console.warn(`[ManhwaDL] Failed ${globalIdx + 1}:`, url, err.message);
+              const response = await fetch(url, {
+                mode: 'cors',
+                credentials: 'include',
+                headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
+              });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              blob = await response.blob();
+              mimeType = blob.type;
+            } catch {
+              const result = await fetchImageViaContentScript(url);
+              blob = result.blob;
+              mimeType = result.mimeType;
             }
-          })
-        );
+          }
 
-        completed += batch.length;
-        const pct = Math.round((completed / total) * 80);
-        updateProgress(pct, `${Math.min(completed, total)}/${total}`);
-      }
+          const ext = getFileExtension(url, mimeType);
+          folder.file(`${pageNum}${ext}`, blob);
+        } catch (err) {
+          failed++;
+          console.warn(`[ManhwaDL] Failed ${globalIdx + 1}:`, url, err.message);
+        }
+      })
+    );
+
+    completed += batch.length;
+    const pct = Math.round((completed / total) * 80);
+    updateProgress(pct, `⚡ ${Math.min(completed, total)}/${total}`);
+  }
 
       if (completed - failed === 0) {
         throw new Error('All images failed to download.');
       }
 
-      updateProgress(85, 'Creating ZIP...');
+updateProgress(85, '⚡ Packing ZIP...');
 
-      const zipBlob = await zip.generateAsync(
-        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
-        (meta) => {
-          const zipPct = 85 + Math.round(meta.percent * 0.15);
-          updateProgress(zipPct, `Compressing ${Math.round(meta.percent)}%`);
-        }
-      );
+// ⚡ TURBO: STORE mode (no compression)
+// Gambar JPG/PNG/WEBP sudah ter-compress, kompress lagi = buang-buang waktu
+// Speed: ~5x lebih cepat, size: hanya 2-5% lebih besar
+const zipBlob = await zip.generateAsync(
+  { 
+    type: 'blob', 
+    compression: 'STORE',  // ⚡ STORE bukan DEFLATE
+  },
+  (meta) => {
+    const zipPct = 85 + Math.round(meta.percent * 0.15);
+    updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
+  }
+);
 
       updateProgress(100, 'Saving...');
       const blobUrl = URL.createObjectURL(zipBlob);
