@@ -745,3 +745,291 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   TABS
+   ═══════════════════════════════════════════════════════════ */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+}
+
+.tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-3);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.tab svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tab:hover {
+  color: var(--color-text-2);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tab.active {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-400));
+  color: white;
+  box-shadow: 0 2px 8px rgba(108, 92, 231, 0.4);
+}
+
+.tab-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--color-warning);
+  color: #000;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.5px;
+}
+
+.tab-content {
+  display: none;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: tab-fade-in var(--transition-slow);
+}
+
+.tab-content.active {
+  display: flex;
+}
+
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TEXTAREA
+   ═══════════════════════════════════════════════════════════ */
+
+.textarea {
+  resize: vertical;
+  min-height: 100px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CHECKBOX
+   ═══════════════════════════════════════════════════════════ */
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary-500);
+  cursor: pointer;
+}
+
+.checkbox-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-2);
+}
+
+.checkbox-field:hover .checkbox-label {
+  color: var(--color-text);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BATCH CONFIG
+   ═══════════════════════════════════════════════════════════ */
+
+.batch-config {
+  animation: batch-slide-in var(--transition-base);
+}
+
+@keyframes batch-slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BATCH PROGRESS
+   ═══════════════════════════════════════════════════════════ */
+
+.card-batch-progress {
+  background: linear-gradient(135deg, var(--color-surface), var(--color-surface-2));
+  border-color: var(--color-primary-500);
+  padding: var(--space-4);
+  animation: card-glow 2s ease-in-out infinite;
+}
+
+.batch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.batch-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+#batchOverallText {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+#batchOverallPercent {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-primary-400);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-current {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.batch-current-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-size-sm);
+}
+
+#batchCurrentTitle {
+  color: var(--color-text);
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding-right: var(--space-2);
+}
+
+#batchCurrentStatus {
+  color: var(--color-primary-400);
+  font-weight: 700;
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+}
+
+/* Batch List */
+.batch-list {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+.batch-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  transition: all var(--transition-fast);
+}
+
+.batch-item-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.batch-item-title {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text-2);
+}
+
+.batch-item-status {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+/* Batch item states */
+.batch-item.waiting {
+  opacity: 0.5;
+}
+
+.batch-item.active {
+  border-color: var(--color-primary-500);
+  background: rgba(108, 92, 231, 0.1);
+  animation: pulse-border-item 1.5s infinite;
+}
+
+@keyframes pulse-border-item {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(108, 92, 231, 0); }
+}
+
+.batch-item.success {
+  border-color: var(--color-success);
+}
+
+.batch-item.success .batch-item-status {
+  background: rgba(0, 214, 143, 0.15);
+  color: var(--color-success);
+}
+
+.batch-item.error {
+  border-color: var(--color-danger);
+}
+
+.batch-item.error .batch-item-status {
+  background: rgba(255, 85, 102, 0.15);
+  color: var(--color-danger);
+}
+
+.batch-item.active .batch-item-status {
+  background: rgba(108, 92, 231, 0.15);
+  color: var(--color-primary-400);
+}

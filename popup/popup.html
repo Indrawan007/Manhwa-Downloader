@@ -29,27 +29,390 @@
       </div>
     </header>
 
-    <!-- MAIN -->
-    <main class="app-main">
 
-      <!-- Chapter Name -->
-      <section class="card card-chapter">
+
+<!-- MAIN -->
+<main class="app-main">
+
+  <!-- Tab Switcher -->
+  <div class="tabs">
+    <button class="tab active" data-tab="single">
+      <svg viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      Single
+    </button>
+    <button class="tab" data-tab="batch">
+      <svg viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="3" width="8" height="8" rx="1" stroke="currentColor" stroke-width="2"/>
+        <rect x="13" y="3" width="8" height="8" rx="1" stroke="currentColor" stroke-width="2"/>
+        <rect x="3" y="13" width="8" height="8" rx="1" stroke="currentColor" stroke-width="2"/>
+        <rect x="13" y="13" width="8" height="8" rx="1" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      Batch
+      <span class="tab-badge">NEW</span>
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════
+       SINGLE MODE
+       ═══════════════════════════════════ -->
+  <div id="tabSingle" class="tab-content active">
+
+    <!-- Chapter Name -->
+    <section class="card card-chapter">
+      <div class="field">
+        <label for="chapterName" class="field-label">
+          <svg class="field-icon" viewBox="0 0 24 24" fill="none">
+            <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Chapter Name
+        </label>
+        <input 
+          type="text" 
+          id="chapterName" 
+          class="input"
+          placeholder="Auto-detect..."
+          spellcheck="false"
+        >
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section class="card card-settings">
+      <div class="card-title">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 1v6m0 6v6m11-7h-6m-6 0H1" stroke="currentColor" stroke-width="2"/>
+        </svg>
+        <span>Settings</span>
+      </div>
+
+      <div class="settings-grid">
         <div class="field">
-          <label for="chapterName" class="field-label">
-            <svg class="field-icon" viewBox="0 0 24 24" fill="none">
-              <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-            Chapter Name
-          </label>
+          <label for="namingFormat" class="field-label field-label-sm">Numbering</label>
+          <select id="namingFormat" class="input select">
+            <option value="auto" selected>✨ Auto (smart)</option>
+            <option value="1digit">1, 2, 3</option>
+            <option value="2digit">01, 02, 03</option>
+            <option value="3digit">001, 002, 003</option>
+            <option value="4digit">0001, 0002</option>
+          </select>
+          <span class="field-hint" id="formatHint">Auto-detect digit count</span>
+        </div>
+
+        <div class="field">
+          <label for="scanSpeed" class="field-label field-label-sm">Speed</label>
+          <select id="scanSpeed" class="input select">
+            <option value="slow">🐢 Slow</option>
+            <option value="normal" selected>🚶 Normal</option>
+            <option value="fast">🏃 Fast</option>
+            <option value="turbo">⚡ Turbo</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field field-full">
+        <label for="imageSelector" class="field-label field-label-sm">
+          CSS Selector <span class="field-optional">(optional)</span>
+        </label>
+        <input 
+          type="text" 
+          id="imageSelector" 
+          class="input input-sm"
+          placeholder="#readerarea img"
+          spellcheck="false"
+        >
+      </div>
+    </section>
+
+    <!-- Format Support -->
+    <div class="format-support">
+      <span class="format-label">Supported:</span>
+      <div class="format-list">
+        <span class="format-chip">JPG</span>
+        <span class="format-chip">PNG</span>
+        <span class="format-chip">WEBP</span>
+        <span class="format-chip format-chip-special">BLOB</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button id="btnScan" class="btn btn-primary">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none">
+          <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+          <path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span>Auto Scan</span>
+      </button>
+
+      <button id="btnStop" class="btn btn-danger hidden">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none">
+          <rect x="6" y="6" width="12" height="12" fill="currentColor" rx="1"/>
+        </svg>
+        <span>Stop</span>
+      </button>
+    </div>
+
+    <button id="btnTestScroll" class="btn-ghost">
+      🧪 Test Scroll Compatibility
+    </button>
+
+    <!-- Scan Progress -->
+    <section id="scanProgress" class="card card-progress hidden">
+      <div class="progress-header">
+        <div class="progress-phase">
+          <span class="phase-badge" id="scanPhase">Scanning</span>
+        </div>
+        <div class="progress-counter" id="scanCollected">0 / 0</div>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill-animated" id="scanProgressFill"></div>
+      </div>
+      <div class="progress-footer">
+        <span class="progress-message" id="scanMessage">Preparing...</span>
+        <span class="progress-percent" id="scanPercent">0%</span>
+      </div>
+    </section>
+
+    <!-- Preview -->
+    <section id="previewArea" class="card card-preview hidden">
+      <div class="preview-header">
+        <div class="preview-stats">
+          <svg class="preview-icon" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/>
+            <path d="M21 15l-5-5L5 21" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span id="imageCount">0 images</span>
+        </div>
+        <button id="btnTogglePreview" class="btn-link">
+          <span id="toggleText">Show</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none">
+            <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="previewGrid" class="preview-grid hidden"></div>
+    </section>
+
+    <!-- Download -->
+    <button id="btnDownload" class="btn btn-success btn-download hidden" disabled>
+      <span class="btn-text">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Download ZIP</span>
+      </span>
+      <span class="btn-loading hidden">
+        <span class="spinner"></span>
+        <span id="progressText">0%</span>
+      </span>
+    </button>
+
+    <div id="progressBar" class="progress-track hidden">
+      <div id="progressFill" class="progress-fill-animated"></div>
+    </div>
+
+    <div id="statusMessage" class="alert hidden"></div>
+
+  </div>
+
+  <!-- ═══════════════════════════════════
+       BATCH MODE (NEW!)
+       ═══════════════════════════════════ -->
+  <div id="tabBatch" class="tab-content">
+
+    <!-- Batch Type -->
+    <section class="card card-settings">
+      <div class="card-title">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+          <path d="M4 4h16v16H4z" stroke="currentColor" stroke-width="2"/>
+          <path d="M4 12h16M12 4v16" stroke="currentColor" stroke-width="2"/>
+        </svg>
+        <span>Batch Mode</span>
+      </div>
+
+      <div class="field">
+        <label for="batchType" class="field-label field-label-sm">Batch Type</label>
+        <select id="batchType" class="input select">
+          <option value="next" selected>🔗 Auto Next Chapter</option>
+          <option value="list">📝 URL List</option>
+          <option value="pattern">🎯 URL Pattern</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Auto Next Chapter -->
+    <section id="batchNext" class="card card-settings batch-config">
+      <div class="settings-grid">
+        <div class="field">
+          <label for="nextCount" class="field-label field-label-sm">Chapters</label>
           <input 
-            type="text" 
-            id="chapterName" 
+            type="number" 
+            id="nextCount" 
             class="input"
-            placeholder="Auto-detect..."
-            spellcheck="false"
+            value="5" min="1" max="100"
           >
         </div>
-      </section>
+
+        <div class="field">
+          <label for="chapterDelay" class="field-label field-label-sm">Delay (s)</label>
+          <input 
+            type="number" 
+            id="chapterDelay" 
+            class="input"
+            value="3" min="0" max="60"
+          >
+        </div>
+      </div>
+
+      <div class="field field-full">
+        <label for="nextSelector" class="field-label field-label-sm">
+          Next Button Selector <span class="field-optional">(auto-detect)</span>
+        </label>
+        <input 
+          type="text" 
+          id="nextSelector" 
+          class="input input-sm"
+          placeholder=".next-chapter, .btn-next, a[rel='next']"
+          spellcheck="false"
+        >
+      </div>
+    </section>
+
+    <!-- URL List -->
+    <section id="batchList" class="card card-settings batch-config hidden">
+      <div class="field field-full">
+        <label for="urlList" class="field-label field-label-sm">
+          URL List <span class="field-optional">(one per line)</span>
+        </label>
+        <textarea 
+          id="urlList" 
+          class="input textarea"
+          rows="6"
+          placeholder="https://kagane.to/chapter/1&#10;https://kagane.to/chapter/2&#10;https://kagane.to/chapter/3"
+          spellcheck="false"
+        ></textarea>
+        <span class="field-hint" id="urlListCount">0 URLs</span>
+      </div>
+    </section>
+
+    <!-- URL Pattern -->
+    <section id="batchPattern" class="card card-settings batch-config hidden">
+      <div class="field field-full">
+        <label for="urlPattern" class="field-label field-label-sm">
+          URL Pattern <span class="field-optional">(use {n} for number)</span>
+        </label>
+        <input 
+          type="text" 
+          id="urlPattern" 
+          class="input"
+          placeholder="https://kagane.to/chapter/{n}"
+          spellcheck="false"
+        >
+      </div>
+
+      <div class="settings-grid">
+        <div class="field">
+          <label for="patternStart" class="field-label field-label-sm">From</label>
+          <input 
+            type="number" 
+            id="patternStart" 
+            class="input"
+            value="1" min="1"
+          >
+        </div>
+        <div class="field">
+          <label for="patternEnd" class="field-label field-label-sm">To</label>
+          <input 
+            type="number" 
+            id="patternEnd" 
+            class="input"
+            value="10" min="1"
+          >
+        </div>
+      </div>
+
+      <div class="field field-full">
+        <span class="field-hint" id="patternPreview">Preview will appear here</span>
+      </div>
+    </section>
+
+    <!-- Batch Options -->
+    <section class="card card-settings">
+      <div class="card-title">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+          <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span>Options</span>
+      </div>
+
+      <label class="checkbox-field">
+        <input type="checkbox" id="mergeZip">
+        <span class="checkbox-label">Merge all chapters into single ZIP</span>
+      </label>
+
+      <label class="checkbox-field">
+        <input type="checkbox" id="skipErrors" checked>
+        <span class="checkbox-label">Skip failed chapters & continue</span>
+      </label>
+    </section>
+
+    <!-- Batch Actions -->
+    <div class="actions">
+      <button id="btnBatchStart" class="btn btn-primary">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none">
+          <path d="M5 3l14 9-14 9V3z" fill="currentColor"/>
+        </svg>
+        <span>Start Batch</span>
+      </button>
+
+      <button id="btnBatchStop" class="btn btn-danger hidden">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none">
+          <rect x="6" y="6" width="12" height="12" fill="currentColor" rx="1"/>
+        </svg>
+        <span>Stop</span>
+      </button>
+    </div>
+
+    <!-- Batch Progress -->
+    <section id="batchProgress" class="card card-batch-progress hidden">
+      <div class="batch-header">
+        <div class="batch-header-left">
+          <span class="phase-badge">Batch Download</span>
+          <span id="batchOverallText">0/0 chapters</span>
+        </div>
+        <span id="batchOverallPercent">0%</span>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill-animated" id="batchOverallFill"></div>
+      </div>
+
+      <div class="batch-current" id="batchCurrent">
+        <div class="batch-current-header">
+          <span id="batchCurrentTitle">Preparing...</span>
+          <span id="batchCurrentStatus">-</span>
+        </div>
+        <div class="progress-track" style="height: 4px; margin-top: 6px;">
+          <div class="progress-fill-animated" id="batchCurrentFill"></div>
+        </div>
+      </div>
+
+      <div class="batch-list" id="batchList2">
+        <!-- Dynamic items -->
+      </div>
+    </section>
+
+    <!-- Batch Status -->
+    <div id="batchStatusMessage" class="alert hidden"></div>
+
+  </div>
+
+</main>
+
 
       <!-- Settings -->
       <section class="card card-settings">

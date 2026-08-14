@@ -881,4 +881,654 @@
 
     updateFormatHint();
   })();
+
+  /* ══════════════════════════════════════
+     BATCH MODE - Tab Switcher
+     ══════════════════════════════════════ */
+
+  const batchDom = {
+    tabs: document.querySelectorAll('.tab'),
+    tabContents: document.querySelectorAll('.tab-content'),
+    batchType: $('batchType'),
+    batchNext: $('batchNext'),
+    batchList: $('batchList'),
+    batchPattern: $('batchPattern'),
+    nextCount: $('nextCount'),
+    chapterDelay: $('chapterDelay'),
+    nextSelector: $('nextSelector'),
+    urlList: $('urlList'),
+    urlListCount: $('urlListCount'),
+    urlPattern: $('urlPattern'),
+    patternStart: $('patternStart'),
+    patternEnd: $('patternEnd'),
+    patternPreview: $('patternPreview'),
+    mergeZip: $('mergeZip'),
+    skipErrors: $('skipErrors'),
+    btnBatchStart: $('btnBatchStart'),
+    btnBatchStop: $('btnBatchStop'),
+    batchProgress: $('batchProgress'),
+    batchOverallText: $('batchOverallText'),
+    batchOverallPercent: $('batchOverallPercent'),
+    batchOverallFill: $('batchOverallFill'),
+    batchCurrentTitle: $('batchCurrentTitle'),
+    batchCurrentStatus: $('batchCurrentStatus'),
+    batchCurrentFill: $('batchCurrentFill'),
+    batchList2: $('batchList2'),
+    batchStatusMessage: $('batchStatusMessage'),
+  };
+
+  const batchState = {
+    isRunning: false,
+    stopRequested: false,
+    currentChapter: 0,
+    totalChapters: 0,
+    successCount: 0,
+    failedCount: 0,
+    allChapters: [], // For merge mode
+  };
+
+  /* ══════════════════════════════════════
+     Tab Switching
+     ══════════════════════════════════════ */
+
+  batchDom.tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const targetTab = tab.dataset.tab;
+
+      batchDom.tabs.forEach(t => t.classList.toggle('active', t === tab));
+      batchDom.tabContents.forEach(c => {
+        c.classList.toggle('active', c.id === `tab${targetTab.charAt(0).toUpperCase()}${targetTab.slice(1)}`);
+      });
+    });
+  });
+
+  /* ══════════════════════════════════════
+     Batch Type Switching
+     ══════════════════════════════════════ */
+
+  batchDom.batchType.addEventListener('change', () => {
+    const type = batchDom.batchType.value;
+    batchDom.batchNext.classList.toggle('hidden', type !== 'next');
+    batchDom.batchList.classList.toggle('hidden', type !== 'list');
+    batchDom.batchPattern.classList.toggle('hidden', type !== 'pattern');
+  });
+
+  /* ══════════════════════════════════════
+     URL List Counter
+     ══════════════════════════════════════ */
+
+  batchDom.urlList.addEventListener('input', () => {
+    const urls = batchDom.urlList.value.split('\n').filter(u => u.trim().startsWith('http'));
+    batchDom.urlListCount.textContent = `${urls.length} URL${urls.length !== 1 ? 's' : ''}`;
+    batchDom.urlListCount.classList.toggle('active', urls.length > 0);
+  });
+
+  /* ══════════════════════════════════════
+     Pattern Preview
+     ══════════════════════════════════════ */
+
+  const updatePatternPreview = () => {
+    const pattern = batchDom.urlPattern.value.trim();
+    const start = parseInt(batchDom.patternStart.value) || 1;
+    const end = parseInt(batchDom.patternEnd.value) || 10;
+
+    if (!pattern || !pattern.includes('{n}')) {
+      batchDom.patternPreview.textContent = 'Include {n} in the pattern';
+      batchDom.patternPreview.classList.remove('active');
+      return;
+    }
+
+    if (end < start) {
+      batchDom.patternPreview.textContent = 'End must be >= Start';
+      batchDom.patternPreview.classList.remove('active');
+      return;
+    }
+
+    const count = end - start + 1;
+    const firstUrl = pattern.replace('{n}', start);
+    const lastUrl = pattern.replace('{n}', end);
+
+    batchDom.patternPreview.innerHTML = `${count} URLs: <br>First: <code>${firstUrl}</code><br>Last: <code>${lastUrl}</code>`;
+    batchDom.patternPreview.classList.add('active');
+  };
+
+  batchDom.urlPattern.addEventListener('input', updatePatternPreview);
+  batchDom.patternStart.addEventListener('input', updatePatternPreview);
+  batchDom.patternEnd.addEventListener('input', updatePatternPreview);
+
+  /* ══════════════════════════════════════
+     Batch Status Helpers
+     ══════════════════════════════════════ */
+
+  function showBatchStatus(html, type = 'info', autoHide = true) {
+    batchDom.batchStatusMessage.innerHTML = html;
+    batchDom.batchStatusMessage.className = `alert ${type}`;
+    batchDom.batchStatusMessage.classList.remove('hidden');
+
+    if (autoHide && type !== 'error') {
+      setTimeout(() => batchDom.batchStatusMessage.classList.add('hidden'), 8000);
+    }
+  }
+
+  function updateBatchProgress() {
+    const percent = Math.round((batchState.currentChapter / batchState.totalChapters) * 100);
+    batchDom.batchOverallText.textContent = `${batchState.currentChapter}/${batchState.totalChapters} chapters`;
+    batchDom.batchOverallPercent.textContent = `${percent}%`;
+    batchDom.batchOverallFill.style.width = `${percent}%`;
+  }
+
+  function updateBatchCurrent(title, status, percent = 0) {
+    batchDom.batchCurrentTitle.textContent = title;
+    batchDom.batchCurrentStatus.textContent = status;
+    batchDom.batchCurrentFill.style.width = `${percent}%`;
+  }
+
+  function renderBatchList(chapters) {
+    batchDom.batchList2.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+
+    chapters.forEach((chapter, i) => {
+      const item = document.createElement('div');
+      item.className = 'batch-item waiting';
+      item.id = `batch-item-${i}`;
+      item.innerHTML = `
+        <div class="batch-item-icon">⏸</div>
+        <div class="batch-item-title">${chapter.title || `Chapter ${i + 1}`}</div>
+        <div class="batch-item-status">Waiting</div>
+      `;
+      fragment.appendChild(item);
+    });
+
+    batchDom.batchList2.appendChild(fragment);
+  }
+
+  function updateBatchItem(index, status, statusText, images = 0) {
+    const item = document.getElementById(`batch-item-${index}`);
+    if (!item) return;
+
+    const icons = {
+      waiting: '⏸',
+      active: '⏳',
+      success: '✅',
+      error: '❌',
+    };
+
+    item.className = `batch-item ${status}`;
+    item.querySelector('.batch-item-icon').textContent = icons[status] || '?';
+    item.querySelector('.batch-item-status').textContent = statusText;
+
+    if (images > 0) {
+      item.querySelector('.batch-item-title').textContent += ` (${images} imgs)`;
+    }
+  }
+
+  /* ══════════════════════════════════════
+     Batch: Get URLs to process
+     ══════════════════════════════════════ */
+
+  async function getBatchUrls() {
+    const type = batchDom.batchType.value;
+
+    switch (type) {
+      case 'next': {
+        // Get current URL + next chapter count
+        const tab = await getActiveTab();
+        const count = parseInt(batchDom.nextCount.value) || 1;
+        return {
+          type: 'next',
+          startUrl: tab.url,
+          count,
+          selector: batchDom.nextSelector.value.trim(),
+        };
+      }
+
+      case 'list': {
+        const urls = batchDom.urlList.value
+          .split('\n')
+          .map(u => u.trim())
+          .filter(u => u.startsWith('http'));
+
+        if (urls.length === 0) throw new Error('No valid URLs provided');
+
+        return {
+          type: 'list',
+          urls,
+        };
+      }
+
+      case 'pattern': {
+        const pattern = batchDom.urlPattern.value.trim();
+        const start = parseInt(batchDom.patternStart.value) || 1;
+        const end = parseInt(batchDom.patternEnd.value) || 10;
+
+        if (!pattern || !pattern.includes('{n}')) {
+          throw new Error('Pattern must include {n}');
+        }
+
+        if (end < start) throw new Error('End must be >= Start');
+
+        const urls = [];
+        for (let i = start; i <= end; i++) {
+          urls.push(pattern.replace('{n}', i));
+        }
+
+        return { type: 'pattern', urls };
+      }
+
+      default:
+        throw new Error('Unknown batch type');
+    }
+  }
+
+  /* ══════════════════════════════════════
+     Batch: Wait for tab to load
+     ══════════════════════════════════════ */
+
+  async function waitForTabLoad(tabId, timeout = 30000) {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === 'complete') {
+        // Extra wait untuk dynamic content
+        await sleep(1500);
+        return true;
+      }
+      await sleep(200);
+    }
+
+    throw new Error('Tab load timeout');
+  }
+
+  /* ══════════════════════════════════════
+     Batch: Process single chapter
+     ══════════════════════════════════════ */
+
+  async function processSingleChapter(url, index, mergeZip) {
+    updateBatchItem(index, 'active', 'Loading...');
+    updateBatchCurrent(url, 'Loading page', 0);
+
+    try {
+      // Navigate tab
+      const tab = await getActiveTab();
+      await chrome.tabs.update(tab.id, { url });
+
+      // Wait for load
+      updateBatchCurrent(url, 'Waiting for page...', 10);
+      await waitForTabLoad(tab.id);
+
+      // Ensure content script injected
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content.js'],
+        });
+      } catch { /* already injected */ }
+
+      // Get chapter title
+      const titleRes = await chrome.tabs.sendMessage(tab.id, { action: 'GET_TITLE' });
+      const chapterTitle = titleRes?.title || `Chapter-${index + 1}`;
+
+      updateBatchCurrent(chapterTitle, 'Scanning...', 20);
+      updateBatchItem(index, 'active', 'Scanning');
+
+      // Scan
+      const scanRes = await chrome.tabs.sendMessage(tab.id, {
+        action: 'SCAN_IMAGES',
+        customSelector: dom.imageSelector.value.trim(),
+        speed: dom.scanSpeed.value,
+      });
+
+      if (!scanRes?.success || !scanRes.images?.length) {
+        throw new Error(scanRes?.error || 'No images found');
+      }
+
+      const images = deduplicateUrls(scanRes.images);
+
+      updateBatchCurrent(chapterTitle, `${images.length} images found`, 40);
+      updateBatchItem(index, 'active', `${images.length} imgs`);
+
+      // Fetch all images
+      const format = dom.namingFormat.value;
+      const total = images.length;
+
+      const zip = new JSZip();
+      const folderName = sanitizeFilename(chapterTitle);
+      const folder = zip.folder(folderName);
+
+      let completed = 0;
+      let failed = 0;
+      const batchSize = 8;
+      let currentIdx = 0;
+      const active = new Set();
+
+      const processNext = () => {
+        while (currentIdx < total && active.size < batchSize) {
+          const idx = currentIdx++;
+          const url = images[idx];
+
+          const task = (async () => {
+            try {
+              const { blob, mimeType } = await fetchSingleImage(url, 2);
+              const ext = getFileExtension(url, mimeType);
+              const pageNum = padNumber(idx + 1, format, total);
+              folder.file(`${pageNum}${ext}`, blob);
+              completed++;
+            } catch {
+              failed++;
+            }
+            active.delete(task);
+          })();
+
+          active.add(task);
+        }
+      };
+
+      while (currentIdx < total || active.size > 0) {
+        processNext();
+        if (active.size > 0) {
+          await Promise.race(active);
+          const pct = 40 + Math.round((completed / total) * 40);
+          updateBatchCurrent(chapterTitle, `Downloading ${completed}/${total}`, pct);
+        }
+      }
+
+      await Promise.all(active);
+
+      updateBatchCurrent(chapterTitle, 'Creating ZIP...', 85);
+
+      // ⚡ Handle merge mode
+      if (mergeZip) {
+        // Store chapter data for later merge
+        batchState.allChapters.push({
+          title: folderName,
+          zip: zip,
+        });
+
+        updateBatchItem(index, 'success', `${completed}✓`, completed);
+        return { success: true, images: completed, failed };
+      } else {
+        // Individual ZIP download
+        const zipBlob = await zip.generateAsync(
+          { type: 'blob', compression: 'STORE', streamFiles: true }
+        );
+
+        const blobUrl = URL.createObjectURL(zipBlob);
+        const filename = `${folderName}.zip`;
+
+        await chrome.runtime.sendMessage({
+          action: 'DOWNLOAD_ZIP',
+          dataUrl: blobUrl,
+          filename,
+        });
+
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+        updateBatchItem(index, 'success', `${completed}✓`, completed);
+        return { success: true, images: completed, failed };
+      }
+
+    } catch (error) {
+      console.error(`[Batch] Chapter ${index + 1} failed:`, error);
+      updateBatchItem(index, 'error', 'Failed');
+      throw error;
+    }
+  }
+
+  /* ══════════════════════════════════════
+     Batch: Auto Next Chapter Logic
+     ══════════════════════════════════════ */
+
+  async function findAndClickNext(tabId, customSelector) {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (selector) => {
+        const selectors = selector
+          ? [selector]
+          : [
+              '.next-chapter',
+              '.btn-next',
+              'a[rel="next"]',
+              '.chapter-next',
+              '#next-chapter',
+              '.next',
+              'a.next',
+              '[class*="next"][class*="chapter"]',
+              'a[href*="next"]',
+            ];
+
+        for (const sel of selectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el) {
+              const href = el.href || el.getAttribute('href');
+              if (href) {
+                return { success: true, url: new URL(href, window.location.href).href };
+              }
+              // Try click
+              el.click();
+              return { success: true, clicked: true };
+            }
+          } catch { /* try next */ }
+        }
+
+        return { success: false, error: 'No next chapter button found' };
+      },
+      args: [customSelector],
+    });
+
+    return result[0]?.result;
+  }
+
+  /* ══════════════════════════════════════
+     Batch: Main flow
+     ══════════════════════════════════════ */
+
+  async function startBatch() {
+    if (batchState.isRunning) return;
+
+    try {
+      const config = await getBatchUrls();
+      const mergeZip = batchDom.mergeZip.checked;
+      const skipErrors = batchDom.skipErrors.checked;
+      const delay = (parseInt(batchDom.chapterDelay?.value) || 3) * 1000;
+
+      // Prepare URLs list
+      let urlsList = [];
+
+      if (config.type === 'next') {
+        // Will be discovered dynamically
+        urlsList = [config.startUrl];
+        for (let i = 1; i < config.count; i++) {
+          urlsList.push(null); // Placeholder
+        }
+      } else {
+        urlsList = config.urls;
+      }
+
+      batchState.isRunning = true;
+      batchState.stopRequested = false;
+      batchState.currentChapter = 0;
+      batchState.totalChapters = urlsList.length;
+      batchState.successCount = 0;
+      batchState.failedCount = 0;
+      batchState.allChapters = [];
+
+      // UI
+      batchDom.btnBatchStart.classList.add('hidden');
+      batchDom.btnBatchStop.classList.remove('hidden');
+      batchDom.batchProgress.classList.remove('hidden');
+      batchDom.batchStatusMessage.classList.add('hidden');
+
+      setAppStatus('Batch running', 'warning');
+
+      // Render initial list
+      const chapters = urlsList.map((url, i) => ({
+        title: url || `Chapter ${i + 1}`,
+        url,
+      }));
+      renderBatchList(chapters);
+      updateBatchProgress();
+
+      // Process each chapter
+      for (let i = 0; i < urlsList.length; i++) {
+        if (batchState.stopRequested) {
+          showBatchStatus('⏹ <b>Batch stopped by user</b>', 'info', false);
+          break;
+        }
+
+        batchState.currentChapter = i + 1;
+        updateBatchProgress();
+
+        let currentUrl = urlsList[i];
+
+        // For "next" type, discover URL dynamically
+        if (config.type === 'next' && i > 0 && !currentUrl) {
+          const tab = await getActiveTab();
+          const nextResult = await findAndClickNext(tab.id, config.selector);
+
+          if (!nextResult?.success) {
+            updateBatchItem(i, 'error', 'No next');
+            batchState.failedCount++;
+            if (!skipErrors) break;
+            continue;
+          }
+
+          currentUrl = nextResult.url;
+          if (!currentUrl) {
+            // Was clicked, wait for navigation
+            await sleep(2000);
+            const tab2 = await getActiveTab();
+            currentUrl = tab2.url;
+          }
+
+          urlsList[i] = currentUrl;
+        }
+
+        if (!currentUrl) {
+          updateBatchItem(i, 'error', 'No URL');
+          batchState.failedCount++;
+          if (!skipErrors) break;
+          continue;
+        }
+
+        try {
+          const result = await processSingleChapter(currentUrl, i, mergeZip);
+
+          if (result.success) {
+            batchState.successCount++;
+          } else {
+            batchState.failedCount++;
+            if (!skipErrors) break;
+          }
+
+          // Delay between chapters
+          if (i < urlsList.length - 1 && delay > 0) {
+            updateBatchCurrent('Waiting...', `Delay ${delay/1000}s`, 100);
+            await sleep(delay);
+          }
+
+        } catch (error) {
+          batchState.failedCount++;
+          if (!skipErrors) {
+            showBatchStatus(`❌ <b>Batch stopped:</b> ${error.message}`, 'error', false);
+            break;
+          }
+        }
+      }
+
+      // Handle merge mode: create combined ZIP
+      if (mergeZip && batchState.allChapters.length > 0 && !batchState.stopRequested) {
+        updateBatchCurrent('Merging chapters...', 'Creating combined ZIP', 90);
+
+        const megaZip = new JSZip();
+
+        for (const chapter of batchState.allChapters) {
+          const files = Object.keys(chapter.zip.files);
+          for (const filename of files) {
+            const file = chapter.zip.files[filename];
+            if (!file.dir) {
+              const data = await file.async('blob');
+              megaZip.file(filename, data);
+            }
+          }
+        }
+
+        const mergedBlob = await megaZip.generateAsync(
+          { type: 'blob', compression: 'STORE', streamFiles: true }
+        );
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const mergedFilename = `manhwa-batch-${timestamp}.zip`;
+
+        const blobUrl = URL.createObjectURL(mergedBlob);
+        await chrome.runtime.sendMessage({
+          action: 'DOWNLOAD_ZIP',
+          dataUrl: blobUrl,
+          filename: mergedFilename,
+        });
+
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+        updateBatchCurrent('Complete!', 'Merged ZIP saved', 100);
+      }
+
+      // Final status
+      const totalDone = batchState.successCount + batchState.failedCount;
+      let msg;
+
+      if (batchState.stopRequested) {
+        msg = `⏹ <b>Batch stopped</b><br>`;
+        msg += `<small>✅ ${batchState.successCount} success • ❌ ${batchState.failedCount} failed</small>`;
+        setAppStatus('Stopped', 'warning');
+      } else if (batchState.failedCount === 0) {
+        msg = `✅ <b>Batch complete!</b> ${batchState.successCount}/${batchState.totalChapters} chapters<br>`;
+        if (mergeZip) msg += `<small>📦 Merged into single ZIP</small>`;
+        setAppStatus('Batch done', 'success');
+      } else {
+        msg = `⚠️ <b>Batch done with errors</b><br>`;
+        msg += `<small>✅ ${batchState.successCount} success • ❌ ${batchState.failedCount} failed</small>`;
+        setAppStatus('Done with errors', 'warning');
+      }
+
+      showBatchStatus(msg, batchState.failedCount === 0 ? 'success' : 'warning', false);
+
+    } catch (error) {
+      showBatchStatus(`❌ <b>Batch failed:</b> ${error.message}`, 'error', false);
+      setAppStatus('Error', 'danger');
+      console.error('[Batch] Error:', error);
+    } finally {
+      batchState.isRunning = false;
+      batchDom.btnBatchStart.classList.remove('hidden');
+      batchDom.btnBatchStop.classList.add('hidden');
+    }
+  }
+
+  async function stopBatch() {
+    if (!batchState.isRunning) return;
+
+    batchState.stopRequested = true;
+    batchDom.btnBatchStop.disabled = true;
+    batchDom.btnBatchStop.querySelector('span:last-child').textContent = 'Stopping...';
+
+    try {
+      await chrome.tabs.sendMessage(state.activeTabId, { action: 'STOP_SCAN' });
+    } catch { /* ignore */ }
+
+    setTimeout(() => {
+      batchDom.btnBatchStop.disabled = false;
+      batchDom.btnBatchStop.querySelector('span:last-child').textContent = 'Stop';
+    }, 1000);
+  }
+
+  /* ══════════════════════════════════════
+     Batch Event Listeners
+     ══════════════════════════════════════ */
+
+  batchDom.btnBatchStart.addEventListener('click', startBatch);
+  batchDom.btnBatchStop.addEventListener('click', stopBatch);
+
+  // Trigger initial preview
+  updatePatternPreview();
+
 })();
