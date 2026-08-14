@@ -1263,19 +1263,44 @@
         state.activeTabId = tabId;
 
         // Get chapter title
-        let chapterTitle = 'Chapter-' + (index + 1);
-        try {
-          const titleRes = await chrome.tabs.sendMessage(tabId, { action: 'GET_TITLE' });
-          if (titleRes && titleRes.title) {
-            chapterTitle = titleRes.title;
-          }
-        } catch (e) {
-          console.warn('[Batch] Could not get title, using default');
-        }
+// Get chapter title
+let chapterTitle = null;
+try {
+  const titleRes = await chrome.tabs.sendMessage(tabId, { action: 'GET_TITLE' });
+  if (titleRes && titleRes.title && titleRes.title.length > 3) {
+    chapterTitle = titleRes.title;
+  }
+} catch (e) {
+  console.warn('[Batch] Could not get title:', e.message);
+}
 
-        // Ensure unique title with index prefix
-        const uniqueTitle = String(index + 1).padStart(3, '0') + '-' + chapterTitle;
+// ✅ FALLBACK: Extract dari URL jika title tidak dapat
+if (!chapterTitle) {
+  try {
+    const urlObj = new URL(url);
+    // Ambil segment terakhir dari path
+    const segments = urlObj.pathname.split('/').filter(s => s.length > 0);
+    if (segments.length > 0) {
+      // Clean up: "chapter-1" → "Chapter 1"
+      chapterTitle = segments[segments.length - 1]
+        .replace(/[-_]/g, ' ')
+        .replace(/\.\w+$/, '')  // Remove file extension
+        .replace(/\b\w/g, l => l.toUpperCase());  // Title case
+    }
+  } catch (e) {
+    // Ignore
+  }
+}
 
+// Ultimate fallback
+if (!chapterTitle) {
+  chapterTitle = 'Chapter-' + (index + 1);
+}
+
+// ✅ Use original title (no prefix)
+const uniqueTitle = chapterTitle;
+
+console.log('[Batch] Chapter title:', uniqueTitle);
         updateBatchCurrent(uniqueTitle, 'Scanning images...', 20);
         updateBatchItem(index, 'active', 'Scanning');
 
@@ -1387,21 +1412,24 @@
         }
 
         // Generate ZIP for individual chapter
-        const zipBlob = await zip.generateAsync(
-          { type: 'blob', compression: 'STORE', streamFiles: true }
-        );
+// Generate ZIP for individual chapter
+const zipBlob = await zip.generateAsync(
+  { type: 'blob', compression: 'STORE', streamFiles: true }
+);
 
-        const blobUrl = URL.createObjectURL(zipBlob);
-        const filename = folderName + '.zip';
+const blobUrl = URL.createObjectURL(zipBlob);
+const filename = folderName + '.zip';
 
-        console.log('[Batch] Downloading:', filename);
+console.log('[Batch] Downloading:', filename);
 
-        await chrome.runtime.sendMessage({
-          action: 'DOWNLOAD_ZIP',
-          dataUrl: blobUrl,
-          filename: filename,
-          saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
-        });
+// ✅ conflictAction: 'uniquify' di background.js akan handle duplicate
+// Auto rename jadi: "Chapter 1 (1).zip", "Chapter 1 (2).zip", dst
+await chrome.runtime.sendMessage({
+  action: 'DOWNLOAD_ZIP',
+  dataUrl: blobUrl,
+  filename: filename,
+  saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
+});
 
         setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
 
