@@ -124,6 +124,24 @@
           spellcheck="false"
         >
       </div>
+
+      <!-- Download Options -->
+      <div class="field field-full download-options">
+        <div class="option-title">
+          <svg viewBox="0 0 24 24" fill="none" style="width:12px;height:12px;">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Download Behavior
+        </div>
+
+        <label class="checkbox-field">
+          <input type="checkbox" id="askSaveLocation">
+          <span class="checkbox-label">
+            Ask where to save each file
+            <span class="checkbox-hint">Show "Save As" dialog for each download</span>
+          </span>
+        </label>
+      </div>
     </section>
 
     <!-- Format Support -->
@@ -220,7 +238,7 @@
   </div>
 
   <!-- ═══════════════════════════════════
-       BATCH MODE (NEW!)
+       BATCH MODE
        ═══════════════════════════════════ -->
   <div id="tabBatch" class="tab-content">
 
@@ -283,7 +301,7 @@
     </section>
 
     <!-- URL List -->
-    <section id="batchList" class="card card-settings batch-config hidden">
+    <section id="batchListSection" class="card card-settings batch-config hidden">
       <div class="field field-full">
         <label for="urlList" class="field-label field-label-sm">
           URL List <span class="field-optional">(one per line)</span>
@@ -351,12 +369,18 @@
 
       <label class="checkbox-field">
         <input type="checkbox" id="mergeZip">
-        <span class="checkbox-label">Merge all chapters into single ZIP</span>
+        <span class="checkbox-label">
+          Merge all chapters into single ZIP
+          <span class="checkbox-hint">Combine all chapters into one file</span>
+        </span>
       </label>
 
       <label class="checkbox-field">
         <input type="checkbox" id="skipErrors" checked>
-        <span class="checkbox-label">Skip failed chapters & continue</span>
+        <span class="checkbox-label">
+          Skip failed chapters
+          <span class="checkbox-hint">Continue batch even if chapter fails</span>
+        </span>
       </label>
     </section>
 
@@ -401,9 +425,7 @@
         </div>
       </div>
 
-      <div class="batch-list" id="batchList2">
-        <!-- Dynamic items -->
-      </div>
+      <div class="batch-list" id="batchItemsList"></div>
     </section>
 
     <!-- Batch Status -->

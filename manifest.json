@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Manhwa Downloader",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "description": "Fast & smart manhwa/manga downloader with auto-scroll, blob URL support, and zero-loss capture",
   "permissions": [
     "activeTab",

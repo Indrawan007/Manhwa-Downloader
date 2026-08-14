@@ -747,22 +747,24 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   TABS
+   TABS - Fixed
    ═══════════════════════════════════════════════════════════ */
 
 .tabs {
-  display: flex;
+  display: flex !important;
   gap: 4px;
   padding: 4px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   margin-bottom: var(--space-3);
+  position: relative;
+  z-index: 1;
 }
 
 .tab {
   flex: 1;
-  display: inline-flex;
+  display: inline-flex !important;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
@@ -774,14 +776,17 @@ body {
   font-family: inherit;
   font-size: var(--font-size-sm);
   font-weight: 600;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: all var(--transition-fast);
   position: relative;
+  user-select: none;
+  outline: none;
 }
 
 .tab svg {
   width: 14px;
   height: 14px;
+  pointer-events: none;
 }
 
 .tab:hover {
@@ -806,17 +811,19 @@ body {
   padding: 2px 5px;
   border-radius: var(--radius-full);
   letter-spacing: 0.5px;
+  pointer-events: none;
 }
 
+/* Tab Content */
 .tab-content {
   display: none;
   flex-direction: column;
   gap: var(--space-3);
-  animation: tab-fade-in var(--transition-slow);
 }
 
 .tab-content.active {
-  display: flex;
+  display: flex !important;
+  animation: tab-fade-in var(--transition-slow);
 }
 
 @keyframes tab-fade-in {
@@ -1032,4 +1039,73 @@ body {
 .batch-item.active .batch-item-status {
   background: rgba(108, 92, 231, 0.15);
   color: var(--color-primary-400);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DOWNLOAD OPTIONS
+   ═══════════════════════════════════════════════════════════ */
+
+.download-options {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.option-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-2);
+}
+
+.option-title svg {
+  color: var(--color-primary-400);
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.checkbox-field:hover {
+  background: rgba(108, 92, 231, 0.05);
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary-500);
+  cursor: pointer;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.checkbox-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-2);
+  line-height: 1.4;
+}
+
+.checkbox-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  font-weight: 400;
+}
+
+.checkbox-field:hover .checkbox-label {
+  color: var(--color-text);
 }
