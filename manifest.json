@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Manhwa Downloader",
-  "version": "1.0.0",
-  "description": "Download semua gambar manhwa/manga dalam satu ZIP file dengan auto-scroll",
+  "version": "2.0.0",
+  "description": "Fast & smart manhwa/manga downloader with auto-scroll, blob URL support, and zero-loss capture",
   "permissions": [
     "activeTab",
     "scripting",
-    "downloads"
+    "downloads",
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"

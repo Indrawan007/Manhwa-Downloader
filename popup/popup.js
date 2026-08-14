@@ -1,52 +1,126 @@
 /**
- * Popup Controller - Manhwa Downloader
- * Fixed version - No ReferenceError
+ * Popup Controller - Manhwa Downloader v2.0
+ * Optimized: streaming download, lazy preview, adaptive concurrency
  */
 
 (() => {
   'use strict';
 
+  /* ══════════════════════════════════════
+     Constants
+     ══════════════════════════════════════ */
+
+  const STORAGE_KEYS = {
+    SETTINGS: 'manhwaDL_settings',
+  };
+
+  const PLACEHOLDERS = {
+    blob: 'data:image/svg+xml,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+      '<rect fill="#6c5ce7" width="60" height="80"/>' +
+      '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
+      '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
+    ),
+    loading: 'data:image/svg+xml,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+      '<rect fill="#2d2d4f" width="60" height="80"/>' +
+      '<circle cx="30" cy="40" r="8" fill="#6c5ce7" opacity="0.3"/></svg>'
+    ),
+    error: 'data:image/svg+xml,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
+      '<rect fill="#2d2d4f" width="60" height="80"/>' +
+      '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
+    ),
+  };
+
+  const PREVIEW_INITIAL_LIMIT = 20;
+
+  /* ══════════════════════════════════════
+     DOM References
+     ══════════════════════════════════════ */
+
   const $ = (id) => document.getElementById(id);
 
-  /* ── DOM Elements ── */
-  const $appStatus      = $('appStatus');
-  const $chapterName    = $('chapterName');
-  const $namingFormat   = $('namingFormat');
-  const $formatHint     = $('formatHint');
-  const $scanSpeed      = $('scanSpeed');
-  const $imageSelector  = $('imageSelector');
-  const $btnScan        = $('btnScan');
-  const $btnStop        = $('btnStop');
-  const $btnTestScroll  = $('btnTestScroll');
-  const $btnDownload    = $('btnDownload');
-  const $btnToggle      = $('btnTogglePreview');
-  const $toggleText     = $('toggleText');
-  const $scanProgress   = $('scanProgress');
-  const $scanPhase      = $('scanPhase');
-  const $scanCollected  = $('scanCollected');
-  const $scanProgressFill = $('scanProgressFill');
-  const $scanPercent    = $('scanPercent');
-  const $scanMessage    = $('scanMessage');
-  const $previewArea    = $('previewArea');
-  const $previewGrid    = $('previewGrid');
-  const $imageCount     = $('imageCount');
-  const $progressBar    = $('progressBar');
-  const $progressFill   = $('progressFill');
-  const $progressText   = $('progressText');
-  const $statusMessage  = $('statusMessage');
-  const $btnText        = document.querySelector('.btn-text');
-  const $btnLoading     = document.querySelector('.btn-loading');
+  const dom = {
+    appStatus: $('appStatus'),
+    chapterName: $('chapterName'),
+    namingFormat: $('namingFormat'),
+    formatHint: $('formatHint'),
+    scanSpeed: $('scanSpeed'),
+    imageSelector: $('imageSelector'),
+    btnScan: $('btnScan'),
+    btnStop: $('btnStop'),
+    btnTestScroll: $('btnTestScroll'),
+    btnDownload: $('btnDownload'),
+    btnToggle: $('btnTogglePreview'),
+    toggleText: $('toggleText'),
+    scanProgress: $('scanProgress'),
+    scanPhase: $('scanPhase'),
+    scanCollected: $('scanCollected'),
+    scanProgressFill: $('scanProgressFill'),
+    scanPercent: $('scanPercent'),
+    scanMessage: $('scanMessage'),
+    previewArea: $('previewArea'),
+    previewGrid: $('previewGrid'),
+    imageCount: $('imageCount'),
+    progressBar: $('progressBar'),
+    progressFill: $('progressFill'),
+    progressText: $('progressText'),
+    statusMessage: $('statusMessage'),
+    btnText: document.querySelector('.btn-text'),
+    btnLoading: document.querySelector('.btn-loading'),
+  };
 
-  /* ── State ── */
-  let scannedImages = [];
-  let scannedMeta = [];
-  let isDownloading = false;
-  let isScanning = false;
-  let activeTabId = null;
+  /* ══════════════════════════════════════
+     State
+     ══════════════════════════════════════ */
+
+  const state = {
+    scannedImages: [],
+    scannedMeta: [],
+    isDownloading: false,
+    isScanning: false,
+    activeTabId: null,
+    lazyObserver: null,
+  };
+
+  /* ══════════════════════════════════════
+     Storage (Settings Persistence)
+     ══════════════════════════════════════ */
+
+  async function loadSettings() {
+    try {
+      const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
+      const settings = result[STORAGE_KEYS.SETTINGS];
+      if (settings) {
+        if (settings.namingFormat) dom.namingFormat.value = settings.namingFormat;
+        if (settings.scanSpeed) dom.scanSpeed.value = settings.scanSpeed;
+        if (settings.imageSelector) dom.imageSelector.value = settings.imageSelector;
+      }
+    } catch (error) {
+      console.warn('[ManhwaDL] Load settings failed:', error);
+    }
+  }
+
+  async function saveSettings() {
+    try {
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.SETTINGS]: {
+          namingFormat: dom.namingFormat.value,
+          scanSpeed: dom.scanSpeed.value,
+          imageSelector: dom.imageSelector.value,
+        },
+      });
+    } catch (error) {
+      console.warn('[ManhwaDL] Save settings failed:', error);
+    }
+  }
 
   /* ══════════════════════════════════════
      Utilities
      ══════════════════════════════════════ */
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   async function getActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -56,7 +130,7 @@
 
   async function sendToContentScript(message) {
     const tab = await getActiveTab();
-    activeTabId = tab.id;
+    state.activeTabId = tab.id;
 
     try {
       await chrome.scripting.executeScript({
@@ -72,29 +146,29 @@
     const colors = {
       success: 'var(--color-success)',
       warning: 'var(--color-warning)',
-      danger:  'var(--color-danger)',
-      info:    'var(--color-info)',
+      danger: 'var(--color-danger)',
+      info: 'var(--color-info)',
     };
 
-    $appStatus.innerHTML = `
+    dom.appStatus.innerHTML = `
       <span class="status-dot" style="background: ${colors[color]}"></span>
       <span>${text}</span>
     `;
   }
 
   function showStatus(html, type = 'info', autoHide = true) {
-    $statusMessage.innerHTML = html;
-    $statusMessage.className = `alert ${type}`;
-    $statusMessage.classList.remove('hidden');
+    dom.statusMessage.innerHTML = html;
+    dom.statusMessage.className = `alert ${type}`;
+    dom.statusMessage.classList.remove('hidden');
 
     if (autoHide && type !== 'error') {
-      setTimeout(() => $statusMessage.classList.add('hidden'), 8000);
+      setTimeout(() => dom.statusMessage.classList.add('hidden'), 8000);
     }
   }
 
   function updateProgress(percent, text) {
-    $progressFill.style.width = `${percent}%`;
-    if (text) $progressText.textContent = text;
+    dom.progressFill.style.width = `${percent}%`;
+    if (text) dom.progressText.textContent = text;
   }
 
   function padNumber(num, format, total = 0) {
@@ -133,12 +207,11 @@
   }
 
   function arrayToBlob(dataArray, mimeType = 'image/jpeg') {
-    const uint8Array = new Uint8Array(dataArray);
-    return new Blob([uint8Array], { type: mimeType });
+    return new Blob([new Uint8Array(dataArray)], { type: mimeType });
   }
 
   async function fetchImageViaContentScript(url) {
-    const response = await chrome.tabs.sendMessage(activeTabId, {
+    const response = await chrome.tabs.sendMessage(state.activeTabId, {
       action: 'FETCH_IMAGE',
       url,
     });
@@ -147,67 +220,12 @@
       throw new Error(response?.error || 'Fetch failed');
     }
 
-    if (response.data) {
-      return {
-        blob: arrayToBlob(response.data, response.mimeType),
-        mimeType: response.mimeType,
-      };
-    }
+    if (!response.data) throw new Error('Invalid response format');
 
-    throw new Error('Invalid response format');
-  }
-
-  function updateFormatHint() {
-    if (!$formatHint) return;
-
-    const format = $namingFormat.value;
-    const total = scannedImages.length;
-
-    if (total === 0) {
-      const hints = {
-        'auto':   'Auto-detect digit count',
-        '1digit': 'Example: 1.jpg, 2.jpg, 3.jpg',
-        '2digit': 'Example: 01.jpg, 02.jpg, 03.jpg',
-        '3digit': 'Example: 001.jpg, 002.jpg',
-        '4digit': 'Example: 0001.jpg, 0002.jpg',
-      };
-      $formatHint.textContent = hints[format] || '';
-      $formatHint.classList.remove('active');
-      return;
-    }
-
-    const first = padNumber(1, format, total);
-    const last = padNumber(total, format, total);
-
-    if (format === 'auto') {
-      const digits = Math.max(2, String(total).length);
-      $formatHint.textContent = `✨ ${digits}-digit → ${first} to ${last}`;
-      $formatHint.classList.add('active');
-    } else {
-      $formatHint.textContent = `Preview: ${first} → ${last}`;
-      $formatHint.classList.add('active');
-    }
-  }
-
-  function deduplicateUrls(urls) {
-    const seen = new Set();
-    const unique = [];
-    let duplicates = 0;
-
-    for (const url of urls) {
-      if (!seen.has(url)) {
-        seen.add(url);
-        unique.push(url);
-      } else {
-        duplicates++;
-      }
-    }
-
-    if (duplicates > 0) {
-      console.warn(`[ManhwaDL Popup] Removed ${duplicates} duplicate URLs`);
-    }
-
-    return unique;
+    return {
+      blob: arrayToBlob(response.data, response.mimeType),
+      mimeType: response.mimeType,
+    };
   }
 
   async function fetchSingleImage(url, maxRetry = 2) {
@@ -230,19 +248,63 @@
 
           const blob = await response.blob();
           return { blob, mimeType: blob.type };
-        } catch (directError) {
+        } catch {
           return await fetchImageViaContentScript(url);
         }
       } catch (error) {
         lastError = error;
         if (attempt < maxRetry) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-          console.warn(`[ManhwaDL] Retry ${attempt + 1}/${maxRetry} for:`, url);
+          await sleep(400 * (attempt + 1));
         }
       }
     }
 
-    throw lastError || new Error('Fetch failed after retries');
+    throw lastError || new Error('Fetch failed');
+  }
+
+  function deduplicateUrls(urls) {
+    const seen = new Set();
+    const unique = [];
+
+    for (const url of urls) {
+      if (!seen.has(url)) {
+        seen.add(url);
+        unique.push(url);
+      }
+    }
+
+    return unique;
+  }
+
+  function updateFormatHint() {
+    if (!dom.formatHint) return;
+
+    const format = dom.namingFormat.value;
+    const total = state.scannedImages.length;
+
+    if (total === 0) {
+      const hints = {
+        'auto': 'Auto-detect digit count',
+        '1digit': 'Example: 1.jpg, 2.jpg, 3.jpg',
+        '2digit': 'Example: 01.jpg, 02.jpg, 03.jpg',
+        '3digit': 'Example: 001.jpg, 002.jpg',
+        '4digit': 'Example: 0001.jpg, 0002.jpg',
+      };
+      dom.formatHint.textContent = hints[format] || '';
+      dom.formatHint.classList.remove('active');
+      return;
+    }
+
+    const first = padNumber(1, format, total);
+    const last = padNumber(total, format, total);
+
+    if (format === 'auto') {
+      const digits = Math.max(2, String(total).length);
+      dom.formatHint.textContent = `✨ ${digits}-digit → ${first} to ${last}`;
+    } else {
+      dom.formatHint.textContent = `Preview: ${first} → ${last}`;
+    }
+    dom.formatHint.classList.add('active');
   }
 
   /* ══════════════════════════════════════
@@ -250,120 +312,112 @@
      ══════════════════════════════════════ */
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (message.action === 'SCAN_PROGRESS' && isScanning) {
+    if (message.action === 'SCAN_PROGRESS' && state.isScanning) {
       const { phase, percent, collected, current, total, message: msg } = message.data;
 
-      const phaseText = {
-        discovery: 'Discovery',
-        capture:   'Capturing',
-      }[phase] || phase;
-
-      $scanPhase.textContent = phaseText;
+      const phaseText = { discovery: 'Discovery', capture: 'Capturing' }[phase] || phase;
+      dom.scanPhase.textContent = phaseText;
 
       if (phase === 'capture' && current && total) {
-        $scanCollected.textContent = `${collected} / ${total}`;
+        dom.scanCollected.textContent = `${collected} / ${total}`;
       } else {
-        $scanCollected.textContent = `${collected}`;
+        dom.scanCollected.textContent = `${collected}`;
       }
 
-      $scanProgressFill.style.width = `${percent}%`;
-      $scanPercent.textContent = `${percent}%`;
-      $scanMessage.textContent = msg || '';
+      dom.scanProgressFill.style.width = `${percent}%`;
+      dom.scanPercent.textContent = `${percent}%`;
+      dom.scanMessage.textContent = msg || '';
     }
   });
 
   /* ══════════════════════════════════════
-     Scan + Auto Download
+     Scan
      ══════════════════════════════════════ */
 
   async function scanImages() {
-    if (isScanning || isDownloading) return;
+    if (state.isScanning || state.isDownloading) return;
 
-    isScanning = true;
+    state.isScanning = true;
     setAppStatus('Scanning', 'warning');
 
-    $btnScan.disabled = true;
-    $btnScan.classList.add('hidden');
-    $btnStop.classList.remove('hidden');
-    if ($btnTestScroll) $btnTestScroll.style.display = 'none';
-    $scanProgress.classList.remove('hidden');
-    $previewArea.classList.add('hidden');
-    $btnDownload.classList.add('hidden');
-    $statusMessage.classList.add('hidden');
-    $progressBar.classList.add('hidden');
+    dom.btnScan.disabled = true;
+    dom.btnScan.classList.add('hidden');
+    dom.btnStop.classList.remove('hidden');
+    if (dom.btnTestScroll) dom.btnTestScroll.style.display = 'none';
+    dom.scanProgress.classList.remove('hidden');
+    dom.previewArea.classList.add('hidden');
+    dom.btnDownload.classList.add('hidden');
+    dom.statusMessage.classList.add('hidden');
+    dom.progressBar.classList.add('hidden');
 
-    $scanPhase.textContent = 'Starting';
-    $scanCollected.textContent = '0';
-    $scanProgressFill.style.width = '0%';
-    $scanPercent.textContent = '0%';
-    $scanMessage.textContent = 'Preparing...';
+    dom.scanPhase.textContent = 'Starting';
+    dom.scanCollected.textContent = '0';
+    dom.scanProgressFill.style.width = '0%';
+    dom.scanPercent.textContent = '0%';
+    dom.scanMessage.textContent = 'Preparing...';
 
     let scanSuccess = false;
 
     try {
       const response = await sendToContentScript({
         action: 'SCAN_IMAGES',
-        customSelector: $imageSelector.value.trim(),
-        speed: $scanSpeed.value,
+        customSelector: dom.imageSelector.value.trim(),
+        speed: dom.scanSpeed.value,
       });
 
       if (!response) throw new Error('No response from content script');
+
       if (!response.success && (response.count === 0 || !response.images)) {
         throw new Error(response.error || 'Scan failed');
       }
 
       const rawImages = Array.isArray(response.images) ? response.images : [];
-      scannedImages = deduplicateUrls(rawImages);
-      scannedMeta = Array.isArray(response.meta) ? response.meta : [];
+      state.scannedImages = deduplicateUrls(rawImages);
+      state.scannedMeta = Array.isArray(response.meta) ? response.meta : [];
 
-      if (!$chapterName.value.trim() && response.title) {
-        $chapterName.value = response.title;
+      if (!dom.chapterName.value.trim() && response.title) {
+        dom.chapterName.value = response.title;
       }
 
-      $imageCount.textContent = `${scannedImages.length} image${scannedImages.length !== 1 ? 's' : ''}`;
+      dom.imageCount.textContent = `${state.scannedImages.length} image${state.scannedImages.length !== 1 ? 's' : ''}`;
 
-      if (scannedImages.length > 0) {
+      if (state.scannedImages.length > 0) {
         scanSuccess = true;
         updateFormatHint();
 
-        $scanProgress.classList.add('hidden');
-        $previewArea.classList.remove('hidden');
+        dom.scanProgress.classList.add('hidden');
+        dom.previewArea.classList.remove('hidden');
         renderPreview();
 
-        setAppStatus(`${scannedImages.length} found`, 'success');
+        setAppStatus(`${state.scannedImages.length} found`, 'success');
 
-        const blobCount = scannedImages.filter(u => u.startsWith('blob:')).length;
-        const httpCount = scannedImages.length - blobCount;
-        const totalDetected = response.total || scannedImages.length;
-        const missed = totalDetected - scannedImages.length;
-        const dupsRemoved = rawImages.length - scannedImages.length;
+        const blobCount = state.scannedImages.filter(u => u.startsWith('blob:')).length;
+        const httpCount = state.scannedImages.length - blobCount;
+        const totalDetected = response.total || state.scannedImages.length;
+        const missed = totalDetected - state.scannedImages.length;
+        const dupsRemoved = rawImages.length - state.scannedImages.length;
 
         let scanMsg;
         if (response.stopped) {
-          scanMsg = `<b>Scan stopped.</b> Captured <b>${scannedImages.length}</b> images.`;
+          scanMsg = `<b>Scan stopped.</b> Captured <b>${state.scannedImages.length}</b> images.`;
         } else if (missed > 0) {
-          scanMsg = `⚠️ <b>Captured ${scannedImages.length}/${totalDetected}</b> unique images`;
+          scanMsg = `⚠️ <b>Captured ${state.scannedImages.length}/${totalDetected}</b> images`;
         } else {
-          scanMsg = `✅ <b>Perfect!</b> <b>${scannedImages.length}</b> unique images captured`;
+          scanMsg = `✅ <b>Perfect!</b> <b>${state.scannedImages.length}</b> images captured`;
         }
 
-        if (dupsRemoved > 0) {
-          scanMsg += `<br><small>🔄 ${dupsRemoved} duplicate(s) removed</small>`;
-        }
-
-        if (blobCount > 0) {
-          scanMsg += `<br><small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
-        }
-
+        if (dupsRemoved > 0) scanMsg += `<br><small>🔄 ${dupsRemoved} duplicate(s) removed</small>`;
+        if (blobCount > 0) scanMsg += `<br><small>🔒 ${blobCount} blob + ${httpCount} HTTP</small>`;
         scanMsg += `<br><small>⚡ Auto-downloading...</small>`;
+
         showStatus(scanMsg, missed > 0 ? 'warning' : 'success', false);
 
-        isScanning = false;
-        $btnScan.classList.remove('hidden');
-        $btnStop.classList.add('hidden');
-        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
+        state.isScanning = false;
+        dom.btnScan.classList.remove('hidden');
+        dom.btnStop.classList.add('hidden');
+        if (dom.btnTestScroll) dom.btnTestScroll.style.display = 'block';
 
-        await new Promise(r => setTimeout(r, 300));
+        await sleep(300);
         await downloadAndZip();
 
       } else {
@@ -375,42 +429,40 @@
       showStatus(`<b>Error:</b> ${error.message}`, 'error');
       console.error('[ManhwaDL] Scan error:', error);
     } finally {
-      if (isScanning) {
-        isScanning = false;
-        $btnScan.disabled = false;
-        $btnScan.classList.remove('hidden');
-        $btnStop.classList.add('hidden');
-        if ($btnTestScroll) $btnTestScroll.style.display = 'block';
-        $scanProgress.classList.add('hidden');
+      if (state.isScanning) {
+        state.isScanning = false;
+        dom.btnScan.disabled = false;
+        dom.btnScan.classList.remove('hidden');
+        dom.btnStop.classList.add('hidden');
+        if (dom.btnTestScroll) dom.btnTestScroll.style.display = 'block';
+        dom.scanProgress.classList.add('hidden');
       }
 
-      $btnScan.disabled = false;
+      dom.btnScan.disabled = false;
 
-      if (scanSuccess && scannedImages.length > 0) {
-        $btnDownload.classList.remove('hidden');
-        $btnDownload.disabled = false;
-        const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
-        if ($btnDownloadText) {
-          $btnDownloadText.textContent = 'Download Again';
-        }
+      if (scanSuccess && state.scannedImages.length > 0) {
+        dom.btnDownload.classList.remove('hidden');
+        dom.btnDownload.disabled = false;
+        const btnDownloadText = dom.btnDownload.querySelector('.btn-text span:last-child');
+        if (btnDownloadText) btnDownloadText.textContent = 'Download Again';
       }
     }
   }
 
   async function stopScan() {
-    if (!isScanning) return;
+    if (!state.isScanning) return;
 
-    $btnStop.disabled = true;
-    const $stopText = $btnStop.querySelector('span:last-child');
-    if ($stopText) $stopText.textContent = 'Stopping...';
+    dom.btnStop.disabled = true;
+    const stopText = dom.btnStop.querySelector('span:last-child');
+    if (stopText) stopText.textContent = 'Stopping...';
 
     try {
-      await chrome.tabs.sendMessage(activeTabId, { action: 'STOP_SCAN' });
+      await chrome.tabs.sendMessage(state.activeTabId, { action: 'STOP_SCAN' });
     } catch { /* ignore */ }
 
     setTimeout(() => {
-      $btnStop.disabled = false;
-      if ($stopText) $stopText.textContent = 'Stop';
+      dom.btnStop.disabled = false;
+      if (stopText) stopText.textContent = 'Stop';
     }, 1000);
   }
 
@@ -441,440 +493,339 @@
   }
 
   /* ══════════════════════════════════════
-     Preview
+     Preview (Optimized with Lazy Loading)
      ══════════════════════════════════════ */
 
-/* ══════════════════════════════════════
-   ⚡ OPTIMIZED Preview - Virtual Scrolling
-   ══════════════════════════════════════ */
+  function renderPreview() {
+    const format = dom.namingFormat.value;
+    const total = state.scannedImages.length;
+    dom.previewGrid.innerHTML = '';
 
-function renderPreview() {
-  const format = $namingFormat.value;
-  const total = scannedImages.length;
-  $previewGrid.innerHTML = '';
+    // Cleanup previous observer
+    if (state.lazyObserver) {
+      state.lazyObserver.disconnect();
+    }
 
-  // ⚡ Only render first 20 thumbnails initially
-  // Rest loaded on demand when user scrolls
-  const initialLimit = 20;
-  const limit = Math.min(scannedImages.length, initialLimit);
-
-  // ⚡ Use IntersectionObserver untuk lazy load
-  const lazyObserver = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        const img = entry.target;
-        const realSrc = img.dataset.realSrc;
-        if (realSrc) {
-          img.src = realSrc;
-          img.removeAttribute('data-real-src');
-          lazyObserver.unobserve(img);
+    // Create new IntersectionObserver
+    state.lazyObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const img = entry.target;
+          const realSrc = img.dataset.realSrc;
+          if (realSrc) {
+            img.src = realSrc;
+            img.removeAttribute('data-real-src');
+            state.lazyObserver.unobserve(img);
+          }
         }
-      }
+      });
+    }, {
+      root: dom.previewGrid,
+      rootMargin: '100px',
+      threshold: 0.01,
     });
-  }, {
-    root: $previewGrid,
-    rootMargin: '100px',
-    threshold: 0.01,
-  });
 
-  // ⚡ Placeholder SVG (super lightweight)
-  const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#2d2d4f" width="60" height="80"/>' +
-    '<circle cx="30" cy="40" r="8" fill="#6c5ce7" opacity="0.3"/></svg>'
-  );
+    const limit = Math.min(state.scannedImages.length, PREVIEW_INITIAL_LIMIT);
+    const fragment = document.createDocumentFragment();
 
-  const blobPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#6c5ce7" width="60" height="80"/>' +
-    '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
-    '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
-  );
+    for (let i = 0; i < limit; i++) {
+      fragment.appendChild(createThumbnail(i, format, total));
+    }
 
-  const errorPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#2d2d4f" width="60" height="80"/>' +
-    '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
-  );
+    dom.previewGrid.appendChild(fragment);
 
-  // ⚡ Use DocumentFragment untuk batch DOM operations
-  const fragment = document.createDocumentFragment();
+    if (state.scannedImages.length > limit) {
+      dom.previewGrid.appendChild(createMoreButton(limit, format, total));
+    }
+  }
 
-  for (let i = 0; i < limit; i++) {
+  function createThumbnail(index, format, total) {
     const thumb = document.createElement('div');
     thumb.className = 'preview-thumb';
 
     const img = document.createElement('img');
-    const url = scannedImages[i];
+    const url = state.scannedImages[index];
 
     if (url.startsWith('blob:')) {
-      // Blob URL: langsung tampilkan placeholder
-      img.src = blobPlaceholder;
+      img.src = PLACEHOLDERS.blob;
     } else {
-      // HTTP: lazy load
-      img.src = placeholder;
+      img.src = PLACEHOLDERS.loading;
       img.dataset.realSrc = url;
-      img.onerror = () => { img.src = errorPlaceholder; };
-      lazyObserver.observe(img);
+      img.onerror = () => { img.src = PLACEHOLDERS.error; };
+      state.lazyObserver.observe(img);
     }
 
     img.loading = 'lazy';
-    img.alt = `Page ${i + 1}`;
-    img.decoding = 'async';  // ⚡ Async decoding
+    img.alt = `Page ${index + 1}`;
+    img.decoding = 'async';
 
     const idx = document.createElement('span');
     idx.className = 'thumb-index';
-    idx.textContent = padNumber(i + 1, format, total);
+    idx.textContent = padNumber(index + 1, format, total);
 
     thumb.append(img, idx);
-    fragment.appendChild(thumb);
+    return thumb;
   }
 
-  // ⚡ Single DOM update
-  $previewGrid.appendChild(fragment);
-
-  // Show "more" indicator
-  if (scannedImages.length > limit) {
+  function createMoreButton(startIdx, format, total) {
     const more = document.createElement('div');
     more.className = 'preview-thumb';
     more.style.cssText = `
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       background: var(--color-surface-3);
       font-size: var(--font-size-md);
       color: var(--color-text-2);
       font-weight: 700;
       cursor: pointer;
     `;
-    more.textContent = `+${scannedImages.length - limit}`;
-    more.title = 'Click to show all';
+    more.textContent = `+${state.scannedImages.length - startIdx}`;
+    more.title = 'Click to load all';
 
-    // ⚡ Click to load rest
     more.addEventListener('click', () => {
       more.remove();
-      renderRestOfPreview(limit, lazyObserver);
+      const fragment = document.createDocumentFragment();
+      for (let i = startIdx; i < state.scannedImages.length; i++) {
+        fragment.appendChild(createThumbnail(i, format, total));
+      }
+      dom.previewGrid.appendChild(fragment);
     });
 
-    $previewGrid.appendChild(more);
+    return more;
   }
-}
-
-/**
- * ⚡ Render sisa preview on-demand
- */
-function renderRestOfPreview(startIdx, lazyObserver) {
-  const format = $namingFormat.value;
-  const total = scannedImages.length;
-  const fragment = document.createDocumentFragment();
-
-  const blobPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#6c5ce7" width="60" height="80"/>' +
-    '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
-    '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
-  );
-
-  const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#2d2d4f" width="60" height="80"/></svg>'
-  );
-
-  const errorPlaceholder = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-    '<rect fill="#2d2d4f" width="60" height="80"/>' +
-    '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
-  );
-
-  for (let i = startIdx; i < scannedImages.length; i++) {
-    const thumb = document.createElement('div');
-    thumb.className = 'preview-thumb';
-
-    const img = document.createElement('img');
-    const url = scannedImages[i];
-
-    if (url.startsWith('blob:')) {
-      img.src = blobPlaceholder;
-    } else {
-      img.src = placeholder;
-      img.dataset.realSrc = url;
-      img.onerror = () => { img.src = errorPlaceholder; };
-      lazyObserver.observe(img);
-    }
-
-    img.loading = 'lazy';
-    img.alt = `Page ${i + 1}`;
-    img.decoding = 'async';
-
-    const idx = document.createElement('span');
-    idx.className = 'thumb-index';
-    idx.textContent = padNumber(i + 1, format, total);
-
-    thumb.append(img, idx);
-    fragment.appendChild(thumb);
-  }
-
-  $previewGrid.appendChild(fragment);
-}
 
   /* ══════════════════════════════════════
-     ✅ FIXED: Download & ZIP
+     Download (Streaming Pipeline)
      ══════════════════════════════════════ */
 
-/* ══════════════════════════════════════
-   ⚡ OPTIMIZED: Progressive Streaming Download
-   ══════════════════════════════════════ */
+  async function downloadAndZip() {
+    if (state.isDownloading || state.scannedImages.length === 0) return;
 
-async function downloadAndZip() {
-  if (isDownloading || scannedImages.length === 0) return;
+    state.isDownloading = true;
+    setAppStatus('Downloading', 'info');
 
-  isDownloading = true;
-  setAppStatus('Downloading', 'info');
+    const format = dom.namingFormat.value;
+    const total = state.scannedImages.length;
+    const chapterName = sanitizeFilename(dom.chapterName.value || 'manhwa-chapter');
 
-  const format = $namingFormat.value;
-  const total = scannedImages.length;
-  const chapterName = sanitizeFilename($chapterName.value || 'manhwa-chapter');
+    dom.btnDownload.classList.remove('hidden');
+    dom.btnDownload.disabled = true;
+    dom.btnScan.disabled = true;
+    dom.btnText.classList.add('hidden');
+    dom.btnLoading.classList.remove('hidden');
+    dom.progressBar.classList.remove('hidden');
 
-  $btnDownload.classList.remove('hidden');
-  $btnDownload.disabled = true;
-  $btnScan.disabled = true;
-  $btnText.classList.add('hidden');
-  $btnLoading.classList.remove('hidden');
-  $progressBar.classList.remove('hidden');
+    updateProgress(0, 'Starting...');
 
-  updateProgress(0, 'Starting...');
+    const zip = new JSZip();
+    const folder = zip.folder(chapterName);
 
-  const zip = new JSZip();
-  const folder = zip.folder(chapterName);
+    let completed = 0;
+    let failed = 0;
+    let addedToZip = 0;
+    const failedUrls = [];
 
-  // ⚡ Track completion in real-time
-  let completed = 0;
-  let failed = 0;
-  let addedToZip = 0;
-  const failedUrls = [];
+    const startTime = performance.now();
 
-  console.log(`[ManhwaDL] ⚡ Starting optimized download of ${total} images...`);
+    try {
+      // Adaptive concurrency
+      const batchSize = total > 100 ? 10 : total > 50 ? 8 : 6;
 
-  const startTime = performance.now();
+      let currentIndex = 0;
+      const active = new Set();
 
-  try {
-    // ⚡ ADAPTIVE CONCURRENCY based on total count
-    // Smaller batches = smoother progress, larger = faster
-    const batchSize = total > 100 ? 10 : total > 50 ? 8 : 6;
+      const processNext = () => {
+        while (currentIndex < total && active.size < batchSize) {
+          const idx = currentIndex++;
+          const url = state.scannedImages[idx];
 
-    // ⚡ Priority queue: process in order but allow parallel
-    let currentIndex = 0;
-    const active = new Set();
+          const task = (async () => {
+            try {
+              const { blob, mimeType } = await fetchSingleImage(url, 2);
+              const ext = getFileExtension(url, mimeType);
+              const pageNum = padNumber(idx + 1, format, total);
+              const filename = `${pageNum}${ext}`;
 
-    const processNext = async () => {
-      while (currentIndex < total && active.size < batchSize) {
-        const idx = currentIndex++;
-        const url = scannedImages[idx];
+              folder.file(filename, blob);
+              addedToZip++;
+              completed++;
+            } catch (err) {
+              failed++;
+              failedUrls.push({ index: idx, url, error: err.message });
+              console.error(`[ManhwaDL] ❌ [${idx + 1}]:`, err.message);
+            }
 
-        const task = (async () => {
-          try {
-            const { blob, mimeType } = await fetchSingleImage(url, 2);
-            const ext = getFileExtension(url, mimeType);
-            const pageNum = padNumber(idx + 1, format, total);
-            const filename = `${pageNum}${ext}`;
+            active.delete(task);
+          })();
 
-            // ⚡ IMMEDIATELY add to ZIP (streaming)
-            folder.file(filename, blob);
-            addedToZip++;
-            completed++;
-
-            // Release memory reference (blob is now in ZIP)
-            const size = blob.size;
-
-            console.log(`[ManhwaDL] ✅ [${idx + 1}/${total}] ${filename} (${(size / 1024).toFixed(1)} KB)`);
-          } catch (err) {
-            failed++;
-            failedUrls.push({ index: idx, url, error: err.message });
-            console.error(`[ManhwaDL] ❌ [${idx + 1}/${total}]:`, err.message);
-          }
-
-          active.delete(task);
-        })();
-
-        active.add(task);
-      }
-    };
-
-    // ⚡ Main loop: keep pipeline full
-    while (currentIndex < total || active.size > 0) {
-      await processNext();
-
-      if (active.size > 0) {
-        await Promise.race(active);
-
-        // Update progress
-        const pct = Math.round((completed / total) * 70);
-        updateProgress(pct, `⚡ ${completed}/${total}`);
-      }
-    }
-
-    // Wait untuk semua task selesai
-    await Promise.all(active);
-
-    // ⚡ RETRY failed (parallel juga)
-    if (failedUrls.length > 0) {
-      console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length} failed...`);
-      updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
-
-      const retryPromises = failedUrls.map(async (failedItem) => {
-        try {
-          const { blob, mimeType } = await fetchSingleImage(failedItem.url, 3);
-          const ext = getFileExtension(failedItem.url, mimeType);
-          const pageNum = padNumber(failedItem.index + 1, format, total);
-          const filename = `${pageNum}${ext}`;
-
-          folder.file(filename, blob);
-          addedToZip++;
-          failed--;
-
-          console.log(`[ManhwaDL] ✅ RETRY OK [${failedItem.index + 1}]`);
-        } catch (err) {
-          console.error(`[ManhwaDL] ❌ RETRY FAILED [${failedItem.index + 1}]`);
+          active.add(task);
         }
+      };
+
+      // Streaming pipeline
+      while (currentIndex < total || active.size > 0) {
+        processNext();
+
+        if (active.size > 0) {
+          await Promise.race(active);
+          const pct = Math.round((completed / total) * 70);
+          updateProgress(pct, `⚡ ${completed}/${total}`);
+        }
+      }
+
+      await Promise.all(active);
+
+      // Retry failed (parallel)
+      if (failedUrls.length > 0) {
+        console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length}...`);
+        updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
+
+        const retryPromises = failedUrls.map(async (item) => {
+          try {
+            const { blob, mimeType } = await fetchSingleImage(item.url, 3);
+            const ext = getFileExtension(item.url, mimeType);
+            const pageNum = padNumber(item.index + 1, format, total);
+            folder.file(`${pageNum}${ext}`, blob);
+            addedToZip++;
+            failed--;
+          } catch (err) {
+            console.error(`[ManhwaDL] Retry failed [${item.index + 1}]`);
+          }
+        });
+
+        await Promise.all(retryPromises);
+      }
+
+      const downloadTime = ((performance.now() - startTime) / 1000).toFixed(1);
+      console.log(`[ManhwaDL] 📊 ${addedToZip}/${total} in ${downloadTime}s`);
+
+      if (addedToZip === 0) throw new Error('All images failed to download.');
+
+      // Verify ZIP
+      const zipFileList = Object.keys(zip.files).filter(name =>
+        !zip.files[name].dir && name.startsWith(chapterName + '/')
+      );
+
+      console.log(`[ManhwaDL] 📦 ZIP files: ${zipFileList.length}`);
+
+      updateProgress(80, '⚡ Packing ZIP...');
+
+      const zipStartTime = performance.now();
+
+      const zipBlob = await zip.generateAsync(
+        {
+          type: 'blob',
+          compression: 'STORE',
+          streamFiles: true,
+        },
+        (meta) => {
+          const zipPct = 80 + Math.round(meta.percent * 0.2);
+          updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
+        }
+      );
+
+      const zipTime = ((performance.now() - zipStartTime) / 1000).toFixed(1);
+      console.log(`[ManhwaDL] 📦 ZIP in ${zipTime}s (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB)`);
+
+      updateProgress(100, 'Saving...');
+      const blobUrl = URL.createObjectURL(zipBlob);
+      const filename = `${chapterName}.zip`;
+
+      await chrome.runtime.sendMessage({
+        action: 'DOWNLOAD_ZIP',
+        dataUrl: blobUrl,
+        filename,
       });
 
-      await Promise.all(retryPromises);
-    }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
 
-    const downloadTime = ((performance.now() - startTime) / 1000).toFixed(1);
-    console.log(`[ManhwaDL] 📊 Downloaded ${addedToZip}/${total} in ${downloadTime}s`);
+      setAppStatus('Downloaded', 'success');
 
-    if (addedToZip === 0) {
-      throw new Error('All images failed to download.');
-    }
+      const totalTime = ((performance.now() - startTime) / 1000).toFixed(1);
 
-    // ⚡ Verify ZIP
-    const zipFileList = Object.keys(zip.files).filter(name =>
-      !zip.files[name].dir && name.startsWith(chapterName + '/')
-    );
-
-    console.log(`[ManhwaDL] 📦 ZIP files: ${zipFileList.length}`);
-
-    updateProgress(80, '⚡ Packing ZIP...');
-
-    // ⚡ OPTIMIZED ZIP GENERATION
-    // STORE mode + streaming = fastest
-    const zipStartTime = performance.now();
-
-    const zipBlob = await zip.generateAsync(
-      {
-        type: 'blob',
-        compression: 'STORE',
-        streamFiles: true,  // ⚡ Stream mode - lower memory
-      },
-      (meta) => {
-        const zipPct = 80 + Math.round(meta.percent * 0.2);
-        updateProgress(zipPct, `⚡ Packing ${Math.round(meta.percent)}%`);
+      let msg;
+      if (failed > 0) {
+        const failedNumbers = failedUrls.slice(0, 5).map(f => f.index + 1);
+        msg = `⚠️ <b>Downloaded ${addedToZip}/${total}</b> images<br>`;
+        msg += `<small>❌ Failed: pages ${failedNumbers.join(', ')}${failed > 5 ? '...' : ''}</small><br>`;
+        msg += `<small>⚡ ${totalTime}s • 📦 <code>${filename}</code></small>`;
+      } else {
+        msg = `✅ <b>Perfect!</b> All ${total} images saved in <b>${totalTime}s</b><br>`;
+        msg += `<small>📦 <code>${filename}</code> • 💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
       }
-    );
 
-    const zipTime = ((performance.now() - zipStartTime) / 1000).toFixed(1);
-    console.log(`[ManhwaDL] 📦 ZIP created in ${zipTime}s (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB)`);
-    // Di dalam downloadAndZip(), setelah success message
-// Log performance summary
-console.log('═══════════════════════════════════════════');
-console.log('[ManhwaDL] 📊 PERFORMANCE SUMMARY:');
-console.log(`  Total images: ${total}`);
-console.log(`  Downloaded: ${addedToZip}`);
-console.log(`  Failed: ${failed}`);
-console.log(`  Download time: ${downloadTime}s`);
-console.log(`  ZIP time: ${zipTime}s`);
-console.log(`  Total time: ${totalTime}s`);
-console.log(`  Avg per image: ${(parseFloat(totalTime) / total).toFixed(2)}s`);
-console.log(`  ZIP size: ${(zipBlob.size / 1024 / 1024).toFixed(2)} MB`);
-console.log(`  Throughput: ${(zipBlob.size / 1024 / parseFloat(totalTime)).toFixed(1)} KB/s`);
-console.log('═══════════════════════════════════════════');
+      showStatus(msg, failed > 0 ? 'warning' : 'success', false);
 
+      console.log('═══════════════════════════════════════════');
+      console.log('[ManhwaDL] 📊 PERFORMANCE:');
+      console.log(`  Total: ${total} images`);
+      console.log(`  Downloaded: ${addedToZip}`);
+      console.log(`  Failed: ${failed}`);
+      console.log(`  Total time: ${totalTime}s`);
+      console.log(`  Avg per image: ${(parseFloat(totalTime) / total).toFixed(2)}s`);
+      console.log(`  ZIP size: ${(zipBlob.size / 1024 / 1024).toFixed(2)} MB`);
+      console.log('═══════════════════════════════════════════');
 
-    updateProgress(100, 'Saving...');
-    const blobUrl = URL.createObjectURL(zipBlob);
-    const filename = `${chapterName}.zip`;
+    } catch (error) {
+      setAppStatus('Error', 'danger');
+      showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
+      console.error('[ManhwaDL] Download error:', error);
+    } finally {
+      state.isDownloading = false;
+      dom.btnDownload.disabled = false;
+      dom.btnScan.disabled = false;
+      dom.btnText.classList.remove('hidden');
+      dom.btnLoading.classList.add('hidden');
+      dom.progressBar.classList.add('hidden');
+      updateProgress(0, '');
 
-    await chrome.runtime.sendMessage({
-      action: 'DOWNLOAD_ZIP',
-      dataUrl: blobUrl,
-      filename,
-    });
-
-    // ⚡ Faster cleanup
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-
-    setAppStatus('Downloaded', 'success');
-
-    const totalTime = ((performance.now() - startTime) / 1000).toFixed(1);
-
-    let msg;
-    if (failed > 0) {
-      const failedNumbers = failedUrls
-        .slice(0, 5)
-        .map(f => f.index + 1);
-      msg = `⚠️ <b>Downloaded ${addedToZip}/${total}</b> images<br>`;
-      msg += `<small>❌ Failed: pages ${failedNumbers.join(', ')}${failed > 5 ? '...' : ''}</small><br>`;
-      msg += `<small>⚡ ${totalTime}s • 📦 <code>${filename}</code></small>`;
-    } else {
-      msg = `✅ <b>Perfect!</b> All ${total} images saved in <b>${totalTime}s</b><br>`;
-      msg += `<small>📦 <code>${filename}</code> • 💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
-    }
-
-    showStatus(msg, failed > 0 ? 'warning' : 'success', false);
-
-  } catch (error) {
-    setAppStatus('Error', 'danger');
-    showStatus(`<b>Download failed:</b> ${error.message}`, 'error');
-    console.error('[ManhwaDL] Download error:', error);
-  } finally {
-    isDownloading = false;
-    $btnDownload.disabled = false;
-    $btnScan.disabled = false;
-    $btnText.classList.remove('hidden');
-    $btnLoading.classList.add('hidden');
-    $progressBar.classList.add('hidden');
-    updateProgress(0, '');
-
-    const $btnDownloadText = $btnDownload.querySelector('.btn-text span:last-child');
-    if ($btnDownloadText) {
-      $btnDownloadText.textContent = 'Download Again';
+      const btnDownloadText = dom.btnDownload.querySelector('.btn-text span:last-child');
+      if (btnDownloadText) btnDownloadText.textContent = 'Download Again';
     }
   }
-}
 
   /* ══════════════════════════════════════
      Events
      ══════════════════════════════════════ */
 
-  $btnScan.addEventListener('click', scanImages);
-  $btnStop.addEventListener('click', stopScan);
-  if ($btnTestScroll) $btnTestScroll.addEventListener('click', testScroll);
-  $btnDownload.addEventListener('click', downloadAndZip);
+  dom.btnScan.addEventListener('click', scanImages);
+  dom.btnStop.addEventListener('click', stopScan);
+  if (dom.btnTestScroll) dom.btnTestScroll.addEventListener('click', testScroll);
+  dom.btnDownload.addEventListener('click', downloadAndZip);
 
-  $btnToggle.addEventListener('click', () => {
-    const isHidden = $previewGrid.classList.toggle('hidden');
-    $toggleText.textContent = isHidden ? 'Show' : 'Hide';
-    $btnToggle.classList.toggle('active', !isHidden);
+  dom.btnToggle.addEventListener('click', () => {
+    const isHidden = dom.previewGrid.classList.toggle('hidden');
+    dom.toggleText.textContent = isHidden ? 'Show' : 'Hide';
+    dom.btnToggle.classList.toggle('active', !isHidden);
   });
 
-  $namingFormat.addEventListener('change', () => {
+  dom.namingFormat.addEventListener('change', () => {
     updateFormatHint();
-    if (scannedImages.length > 0) renderPreview();
+    if (state.scannedImages.length > 0) renderPreview();
+    saveSettings();
   });
+
+  dom.scanSpeed.addEventListener('change', saveSettings);
+  dom.imageSelector.addEventListener('change', saveSettings);
 
   /* ══════════════════════════════════════
      Init
      ══════════════════════════════════════ */
 
   (async function init() {
+    await loadSettings();
+
     try {
       const res = await sendToContentScript({ action: 'GET_TITLE' });
       if (res?.success && res.title) {
-        $chapterName.value = res.title;
+        dom.chapterName.value = res.title;
       }
       setAppStatus('Ready', 'success');
     } catch {
       setAppStatus('No access', 'warning');
     }
+
     updateFormatHint();
   })();
 })();
