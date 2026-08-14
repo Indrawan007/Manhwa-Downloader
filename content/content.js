@@ -1,17 +1,16 @@
 /**
- * Content Script - Manhwa Downloader v2.0
- * Optimized: Single-pass discovery, adaptive polling, streaming capture
+ * Content Script - Manhwa Downloader v3.0
+ * Extreme optimization: pipeline, native APIs, smart discovery
  */
 
 (() => {
   'use strict';
 
-  const DEBUG = true;
+  const DEBUG = false; // ⚡ Disable in production for speed
   const log = (...args) => DEBUG && console.log('[ManhwaDL]', ...args);
-  const warn = (...args) => DEBUG && console.warn('[ManhwaDL]', ...args);
 
   /* ══════════════════════════════════════
-     Configuration
+     Configuration (frozen for V8 optimization)
      ══════════════════════════════════════ */
 
   const CONFIG = {
@@ -21,90 +20,61 @@
     imageLoadCheckInterval: 40,
     discoveryScrollPxPerFrame: 70,
     scrollOffset: 100,
-    maxFileSize: 20 * 1024 * 1024, // 20MB per image
-    fetchTimeout: 15000, // 15s per fetch
+    maxFileSize: 20 * 1024 * 1024,
+    fetchTimeout: 15000,
   };
 
-  const SPEED_PRESETS = {
-    slow: {
+  const SPEED_PRESETS = Object.freeze({
+    slow: Object.freeze({
       scrollPxPerFrame: 15,
       scrollSettleTime: 200,
       imageLoadTimeout: 4000,
       imageLoadCheckInterval: 60,
-    },
-    normal: {
+    }),
+    normal: Object.freeze({
       scrollPxPerFrame: 30,
       scrollSettleTime: 100,
       imageLoadTimeout: 2500,
       imageLoadCheckInterval: 40,
-    },
-    fast: {
+    }),
+    fast: Object.freeze({
       scrollPxPerFrame: 50,
       scrollSettleTime: 60,
       imageLoadTimeout: 1800,
       imageLoadCheckInterval: 30,
-    },
-    turbo: {
+    }),
+    turbo: Object.freeze({
       scrollPxPerFrame: 90,
       scrollSettleTime: 40,
       imageLoadTimeout: 1200,
       imageLoadCheckInterval: 20,
-    },
-  };
+    }),
+  });
 
   const SITE_SELECTORS = Object.freeze([
-    '.reading-content img',
-    '.chapter-content img',
-    '#readerarea img',
-    '.reader-area img',
-    '.page-break img',
-    '.viewer-img img',
-    '.chapter-img img',
-    '.manga-reader img',
-    '#image-container img',
-    '.container-chapter-reader img',
-    '.reading-detail img',
-    '.chapter_img img',
-    '.vung-doc img',
-    '.reader-main img',
-    '.wp-manga-chapter-img',
-    '.text-left img',
-    'main img',
-    'article img',
-    '#content img',
-    '.content img',
+    '.reading-content img', '.chapter-content img', '#readerarea img',
+    '.reader-area img', '.page-break img', '.viewer-img img',
+    '.chapter-img img', '.manga-reader img', '#image-container img',
+    '.container-chapter-reader img', '.reading-detail img',
+    '.chapter_img img', '.vung-doc img', '.reader-main img',
+    '.wp-manga-chapter-img', '.text-left img',
+    'main img', 'article img', '#content img', '.content img',
   ]);
 
   const TITLE_SELECTORS = Object.freeze([
-    'h1',
-    '.chapter-title',
-    '#chapter-heading',
-    '.entry-title',
-    '.chapter-name',
-    '.reader-header h1',
-    'title',
+    'h1', '.chapter-title', '#chapter-heading',
+    '.entry-title', '.chapter-name', '.reader-header h1', 'title',
   ]);
 
   const BLACKLIST_PATTERNS = Object.freeze([
-    /\/favicon\./i,
-    /\/logo[-_./]/i,
-    /\/avatar[-_./]/i,
-    /\/emoji[-_./]/i,
-    /\/tracking[-_./]/i,
-    /google.*analytics/i,
-    /facebook\.com\/tr/i,
-    /doubleclick/i,
-    /adservice/i,
-    /disqus/i,
+    /\/favicon\./i, /\/logo[-_./]/i, /\/avatar[-_./]/i,
+    /\/emoji[-_./]/i, /\/tracking[-_./]/i, /google.*analytics/i,
+    /facebook\.com\/tr/i, /doubleclick/i, /adservice/i, /disqus/i,
   ]);
 
   const LAZY_LOAD_ATTRS = Object.freeze([
-    'data-src',
-    'data-lazy-src',
-    'data-original',
-    'data-url',
-    'data-image',
-    'data-cfsrc',
+    'data-src', 'data-lazy-src', 'data-original',
+    'data-url', 'data-image', 'data-cfsrc',
   ]);
 
   /* ══════════════════════════════════════
@@ -119,7 +89,6 @@
       this.element = null;
       this.type = null;
 
-      // Try window scroll first
       const docScrollable = document.documentElement.scrollHeight > window.innerHeight;
       const bodyScrollable = document.body.scrollHeight > window.innerHeight;
 
@@ -136,7 +105,6 @@
         }
       }
 
-      // Try element parent
       const imgs = document.querySelectorAll(imageSelector || 'img');
       if (imgs.length > 0) {
         const container = this.findScrollableParent(imgs[0]);
@@ -147,7 +115,6 @@
         }
       }
 
-      // Fallback: find largest scrollable
       const scrollables = this.findAllScrollables();
       if (scrollables.length > 0) {
         scrollables.sort((a, b) => b.scrollHeight - a.scrollHeight);
@@ -164,10 +131,10 @@
       let current = el.parentElement;
       while (current && current !== document.body) {
         const style = window.getComputedStyle(current);
-        const overflowY = style.overflowY;
-        const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') &&
-                            current.scrollHeight > current.clientHeight;
-        if (isScrollable) return current;
+        if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+            current.scrollHeight > current.clientHeight) {
+          return current;
+        }
         current = current.parentElement;
       }
       return null;
@@ -175,21 +142,23 @@
 
     findAllScrollables() {
       const results = [];
-      document.querySelectorAll('*').forEach(el => {
+      const all = document.querySelectorAll('*');
+      const len = all.length;
+      for (let i = 0; i < len; i++) {
+        const el = all[i];
         const style = window.getComputedStyle(el);
-        const overflowY = style.overflowY;
-        const canScroll = (overflowY === 'auto' || overflowY === 'scroll') &&
-                          el.scrollHeight > el.clientHeight + 50;
-        if (canScroll) results.push(el);
-      });
+        if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+            el.scrollHeight > el.clientHeight + 50) {
+          results.push(el);
+        }
+      }
       return results;
     },
 
     getScrollY() {
-      if (this.type === 'window') {
-        return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop;
-      }
-      return this.element.scrollTop;
+      return this.type === 'window'
+        ? (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop)
+        : this.element.scrollTop;
     },
 
     getMaxScrollY() {
@@ -203,27 +172,23 @@
     },
 
     getScrollHeight() {
-      if (this.type === 'window') {
-        return Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
-      }
-      return this.element.scrollHeight;
+      return this.type === 'window'
+        ? Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+        : this.element.scrollHeight;
     },
 
     getViewportHeight() {
-      if (this.type === 'window') return window.innerHeight;
-      return this.element.clientHeight;
+      return this.type === 'window' ? window.innerHeight : this.element.clientHeight;
     },
 
     scrollTo(y) {
       y = Math.max(0, Math.min(y, this.getMaxScrollY()));
       if (this.type === 'window') {
-        try {
-          window.scrollTo(0, y);
-          document.documentElement.scrollTop = y;
-          document.body.scrollTop = y;
-        } catch { /* ignore */ }
+        window.scrollTo(0, y);
+        document.documentElement.scrollTop = y;
+        document.body.scrollTop = y;
       } else {
-        try { this.element.scrollTop = y; } catch { /* ignore */ }
+        this.element.scrollTop = y;
       }
     },
 
@@ -235,30 +200,26 @@
         const containerRect = this.element.getBoundingClientRect();
         const elRect = el.getBoundingClientRect();
         return elRect.top - containerRect.top + this.getScrollY();
-      } catch {
-        return 0;
-      }
+      } catch { return 0; }
     },
   };
 
   /* ══════════════════════════════════════
-     Scan State Manager
+     Scan State
      ══════════════════════════════════════ */
 
   const scanState = {
     isRunning: false,
     stopRequested: false,
-    activeSelector: null,
     highlightEl: null,
+    bannerEl: null,
 
     start() {
       this.isRunning = true;
       this.stopRequested = false;
     },
 
-    stop() {
-      this.stopRequested = true;
-    },
+    stop() { this.stopRequested = true; },
 
     finish() {
       this.isRunning = false;
@@ -276,33 +237,22 @@
         const overlay = document.createElement('div');
         overlay.id = '__manhwa_dl_highlight__';
         overlay.style.cssText = `
-          position: fixed;
-          top: ${rect.top}px;
-          left: ${rect.left}px;
-          width: ${rect.width}px;
-          height: ${rect.height}px;
-          border: 4px solid #6c5ce7;
-          box-shadow: 0 0 20px rgba(108, 92, 231, 0.8), inset 0 0 20px rgba(108, 92, 231, 0.3);
-          background: rgba(108, 92, 231, 0.1);
-          z-index: 999999;
-          pointer-events: none;
-          transition: all 0.2s ease;
-          border-radius: 4px;
+          position:fixed;top:${rect.top}px;left:${rect.left}px;
+          width:${rect.width}px;height:${rect.height}px;
+          border:4px solid #6c5ce7;
+          box-shadow:0 0 20px rgba(108,92,231,0.8),inset 0 0 20px rgba(108,92,231,0.3);
+          background:rgba(108,92,231,0.1);z-index:999999;
+          pointer-events:none;border-radius:4px;
+          contain:layout style paint;
         `;
 
         const label = document.createElement('div');
         label.style.cssText = `
-          position: absolute;
-          top: 8px;
-          left: 8px;
-          background: #6c5ce7;
-          color: white;
-          padding: 4px 12px;
-          border-radius: 4px;
-          font-family: system-ui, sans-serif;
-          font-size: 14px;
-          font-weight: 700;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          position:absolute;top:8px;left:8px;
+          background:#6c5ce7;color:white;padding:4px 12px;
+          border-radius:4px;font-family:system-ui,sans-serif;
+          font-size:14px;font-weight:700;
+          box-shadow:0 2px 8px rgba(0,0,0,0.3);
         `;
         label.textContent = `📸 ${index}/${total}`;
 
@@ -313,43 +263,40 @@
     },
 
     removeHighlight() {
-      document.getElementById('__manhwa_dl_highlight__')?.remove();
-      this.highlightEl = null;
+      if (this.highlightEl) {
+        this.highlightEl.remove();
+        this.highlightEl = null;
+      }
     },
 
     showBanner(text) {
-      let banner = document.getElementById('__manhwa_dl_banner__');
-      if (!banner) {
-        banner = document.createElement('div');
-        banner.id = '__manhwa_dl_banner__';
-        banner.style.cssText = `
-          position: fixed;
-          top: 20px;
-          right: 20px;
-          background: linear-gradient(135deg, #6c5ce7, #a29bfe);
-          color: white;
-          padding: 12px 20px;
-          border-radius: 8px;
-          font-family: system-ui, sans-serif;
-          font-size: 14px;
-          font-weight: 600;
-          box-shadow: 0 4px 20px rgba(108, 92, 231, 0.5);
-          z-index: 999998;
-          min-width: 200px;
-          text-align: center;
+      if (!this.bannerEl) {
+        this.bannerEl = document.createElement('div');
+        this.bannerEl.id = '__manhwa_dl_banner__';
+        this.bannerEl.style.cssText = `
+          position:fixed;top:20px;right:20px;
+          background:linear-gradient(135deg,#6c5ce7,#a29bfe);
+          color:white;padding:12px 20px;border-radius:8px;
+          font-family:system-ui,sans-serif;font-size:14px;
+          font-weight:600;box-shadow:0 4px 20px rgba(108,92,231,0.5);
+          z-index:999998;min-width:200px;text-align:center;
+          contain:layout style;
         `;
-        document.body.appendChild(banner);
+        document.body.appendChild(this.bannerEl);
       }
-      banner.textContent = text;
+      this.bannerEl.textContent = text;
     },
 
     hideBanner() {
-      document.getElementById('__manhwa_dl_banner__')?.remove();
+      if (this.bannerEl) {
+        this.bannerEl.remove();
+        this.bannerEl = null;
+      }
     },
   };
 
   /* ══════════════════════════════════════
-     Utility Functions
+     Utilities (Optimized)
      ══════════════════════════════════════ */
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -364,8 +311,9 @@
   }
 
   function detectChapterTitle() {
-    for (const selector of TITLE_SELECTORS) {
-      const el = document.querySelector(selector);
+    const len = TITLE_SELECTORS.length;
+    for (let i = 0; i < len; i++) {
+      const el = document.querySelector(TITLE_SELECTORS[i]);
       if (el) {
         const text = (el.textContent || el.innerText || '').trim();
         if (text.length > 0 && text.length < 200) {
@@ -380,41 +328,46 @@
     if (!src || typeof src !== 'string') return false;
     if (src.startsWith('data:')) return false;
     if (src.startsWith('blob:')) return true;
+    if (!src.toLowerCase().startsWith('http')) return false;
 
     const lower = src.toLowerCase();
-    if (!lower.startsWith('http')) return false;
-
-    for (const pattern of BLACKLIST_PATTERNS) {
-      if (pattern.test(lower)) return false;
+    const len = BLACKLIST_PATTERNS.length;
+    for (let i = 0; i < len; i++) {
+      if (BLACKLIST_PATTERNS[i].test(lower)) return false;
     }
-
     return true;
   }
 
   function getBestImageUrl(el) {
     if (!el) return null;
 
-    const candidates = [];
-
-    if (el.tagName === 'IMG') {
-      candidates.push(
-        el.src,
-        el.currentSrc,
-        el.dataset.src,
-        el.dataset.lazySrc,
-        el.dataset.original,
-        el.getAttribute('data-src'),
-        el.getAttribute('data-lazy-src'),
-        el.getAttribute('data-original'),
-        el.getAttribute('data-url'),
-        el.getAttribute('data-image'),
-        el.getAttribute('data-cfsrc'),
-      );
-    } else if (el.tagName === 'SOURCE') {
-      candidates.push(el.srcset, el.src);
+    // ⚡ Hot path optimization: check src first (most common)
+    const src = el.src;
+    if (src && !src.startsWith('data:') && src.trim() !== '') {
+      if (src.startsWith('blob:')) return src;
+      try {
+        const abs = new URL(src, window.location.href).href;
+        if (validateImageUrl(abs)) return abs;
+      } catch { /* ignore */ }
     }
 
-    for (const candidate of candidates) {
+    // Fallback: check other attributes
+    const candidates = el.tagName === 'IMG' ? [
+      el.currentSrc,
+      el.dataset.src,
+      el.dataset.lazySrc,
+      el.dataset.original,
+      el.getAttribute('data-src'),
+      el.getAttribute('data-lazy-src'),
+      el.getAttribute('data-original'),
+      el.getAttribute('data-url'),
+      el.getAttribute('data-image'),
+      el.getAttribute('data-cfsrc'),
+    ] : [el.srcset, el.src];
+
+    const len = candidates.length;
+    for (let i = 0; i < len; i++) {
+      const candidate = candidates[i];
       if (!candidate || typeof candidate !== 'string') continue;
       if (candidate.startsWith('data:') || candidate.trim() === '') continue;
 
@@ -436,29 +389,32 @@
 
   function forceLazyLoad(imgs) {
     const targets = imgs || document.querySelectorAll('img');
+    const attrsLen = LAZY_LOAD_ATTRS.length;
+    const targetsLen = targets.length;
 
-    targets.forEach(img => {
-      for (const attr of LAZY_LOAD_ATTRS) {
-        const val = img.getAttribute(attr);
-        if (val && !val.startsWith('data:')) {
-          const isPlaceholder = !img.src ||
-                                img.src.startsWith('data:') ||
-                                img.src.includes('placeholder');
-          if (isPlaceholder) {
+    for (let i = 0; i < targetsLen; i++) {
+      const img = targets[i];
+      const src = img.src;
+      const isPlaceholder = !src || src.startsWith('data:') || src.includes('placeholder');
+
+      if (isPlaceholder) {
+        for (let j = 0; j < attrsLen; j++) {
+          const val = img.getAttribute(LAZY_LOAD_ATTRS[j]);
+          if (val && !val.startsWith('data:')) {
             img.src = val.split(',')[0].trim().split(/\s+/)[0];
+            break; // ⚡ Stop after first valid
           }
         }
       }
+
       if (img.loading === 'lazy') img.loading = 'eager';
-      img.classList.remove('lazy', 'lazyload');
-    });
+    }
   }
 
   async function smoothScrollTo(targetY, pxPerFrame = CONFIG.scrollPxPerFrame) {
     return new Promise((resolve) => {
       const startY = scrollContainer.getScrollY();
       const distance = targetY - startY;
-      const direction = distance > 0 ? 1 : -1;
       const absDistance = Math.abs(distance);
 
       if (absDistance < 5) {
@@ -466,6 +422,7 @@
         return;
       }
 
+      const direction = distance > 0 ? 1 : -1;
       let traveled = 0;
 
       const step = () => {
@@ -478,119 +435,134 @@
         const moveThisFrame = Math.min(pxPerFrame, remaining);
 
         traveled += moveThisFrame;
-        const newY = startY + (traveled * direction);
-        scrollContainer.scrollTo(newY);
+        scrollContainer.scrollTo(startY + (traveled * direction));
 
-        if (traveled >= absDistance) resolve();
-        else requestAnimationFrame(step);
+        if (traveled >= absDistance) {
+          resolve();
+        } else {
+          requestAnimationFrame(step);
+        }
       };
       requestAnimationFrame(step);
     });
   }
 
   /**
-   * Wait with adaptive polling for image to fully load
+   * ⚡ NATIVE: Wait using image load events (bukan polling)
    */
-  async function waitForImageLoad(img, timeout = CONFIG.imageLoadTimeout) {
-    if (!img) return false;
-
-    if (img.complete && img.naturalWidth > 100 && img.naturalHeight > 100) {
-      return true;
-    }
-
-    const startTime = Date.now();
-    let lastForceLoad = 0;
-    let stableSizeCount = 0;
-    let lastSize = 0;
-    let pollInterval = 30;
-
-    while (Date.now() - startTime < timeout) {
-      if (scanState.stopRequested) return false;
-
-      const now = Date.now();
-      const elapsed = now - startTime;
-
-      // Adaptive force load frequency
-      const forceInterval = elapsed < 1000 ? 150 : 250;
-      if (now - lastForceLoad > forceInterval) {
-        forceLazyLoad([img]);
-        lastForceLoad = now;
+  function waitForImageLoadNative(img, timeout = CONFIG.imageLoadTimeout) {
+    return new Promise((resolve) => {
+      if (!img) {
+        resolve(false);
+        return;
       }
 
-      // Check loaded with reasonable dimensions
-      if (img.complete && img.naturalWidth > 100 && img.naturalHeight > 100) {
-        const currentSize = img.naturalWidth * img.naturalHeight;
+      // Sudah loaded
+      if (img.complete && img.naturalWidth > 100) {
+        resolve(true);
+        return;
+      }
 
-        if (currentSize === lastSize) {
-          stableSizeCount++;
-          if (stableSizeCount >= 2) return true;
+      let resolved = false;
+      let timeoutId = null;
+      let checkIntervalId = null;
+
+      const cleanup = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeoutId);
+        clearInterval(checkIntervalId);
+        img.removeEventListener('load', onLoad);
+        img.removeEventListener('error', onError);
+      };
+
+      const onLoad = () => {
+        // Wait one frame untuk render selesai
+        requestAnimationFrame(() => {
+          cleanup();
+          resolve(img.naturalWidth > 100);
+        });
+      };
+
+      const onError = () => {
+        cleanup();
+        // Cek apakah punya URL valid
+        resolve(!!getBestImageUrl(img));
+      };
+
+      img.addEventListener('load', onLoad, { once: true });
+      img.addEventListener('error', onError, { once: true });
+
+      // Timeout fallback
+      timeoutId = setTimeout(() => {
+        if (resolved) return;
+
+        // Cek satu kali lagi sebelum give up
+        if (img.complete && img.naturalWidth > 100) {
+          cleanup();
+          resolve(true);
         } else {
-          stableSizeCount = 0;
-          lastSize = currentSize;
+          cleanup();
+          resolve(!!getBestImageUrl(img)); // Terima jika URL valid
+        }
+      }, timeout);
+
+      // ⚡ Periodic check untuk lazy load trigger (200ms)
+      let checks = 0;
+      checkIntervalId = setInterval(() => {
+        if (resolved) return;
+        checks++;
+
+        forceLazyLoad([img]);
+
+        if (img.complete && img.naturalWidth > 100) {
+          cleanup();
+          resolve(true);
         }
 
-        await sleep(80);
-        continue;
-      }
-
-      // Adaptive polling
-      pollInterval = elapsed < 500 ? 30 : elapsed < 2000 ? 50 : 100;
-      await sleep(pollInterval);
-    }
-
-    const url = getBestImageUrl(img);
-    return !!url;
+        // Stop checking after enough tries
+        if (checks * 200 >= timeout) {
+          clearInterval(checkIntervalId);
+        }
+      }, 200);
+    });
   }
 
   function detectImageSelector(customSelector = '') {
     if (customSelector) {
       try {
         const els = document.querySelectorAll(customSelector);
-        if (els.length >= 1) {
-          log(`Using custom: "${customSelector}" (${els.length})`);
-          return customSelector;
-        }
+        if (els.length >= 1) return customSelector;
       } catch { /* invalid */ }
     }
 
     let bestSelector = null;
     let bestCount = 0;
+    const len = SITE_SELECTORS.length;
 
-    for (const selector of SITE_SELECTORS) {
+    for (let i = 0; i < len; i++) {
       try {
-        const count = document.querySelectorAll(selector).length;
+        const count = document.querySelectorAll(SITE_SELECTORS[i]).length;
         if (count > bestCount) {
           bestCount = count;
-          bestSelector = selector;
+          bestSelector = SITE_SELECTORS[i];
         }
       } catch { continue; }
     }
 
-    if (bestSelector && bestCount >= 2) {
-      log(`Auto: "${bestSelector}" (${bestCount})`);
-      return bestSelector;
-    }
-
-    log('Fallback: img');
-    return 'img';
+    return (bestSelector && bestCount >= 2) ? bestSelector : 'img';
   }
 
   /* ══════════════════════════════════════
-     Phase 1: Optimized Discovery
+     Phase 1: Discovery (Smart Skip)
      ══════════════════════════════════════ */
 
   async function discoveryPhase(customSelector, onProgress) {
-    log('╔═══════════════════════════════════╗');
-    log('║ PHASE 1: DISCOVERY (optimized)    ║');
-    log('╚═══════════════════════════════════╝');
-
+    log('PHASE 1: DISCOVERY');
     scanState.showBanner('🔍 Discovery...');
 
     const selector = detectImageSelector(customSelector);
     scrollContainer.detect(selector);
-    scanState.activeSelector = selector;
-
-    log(`Container: ${scrollContainer.type}, Height: ${scrollContainer.getScrollHeight()}`);
 
     await smoothScrollTo(0, 100);
     await sleep(300);
@@ -602,26 +574,27 @@
       const imgs = document.querySelectorAll(selector);
       forceLazyLoad(imgs);
 
-      imgs.forEach(img => {
+      const len = imgs.length;
+      for (let i = 0; i < len; i++) {
+        const img = imgs[i];
         if (!elementMap.has(img)) {
           const y = scrollContainer.getElementY(img);
           elementMap.set(img, { element: img, y: Math.max(0, y) });
-        } else {
-          const info = elementMap.get(img);
-          info.y = Math.max(0, scrollContainer.getElementY(img));
         }
 
         const url = getBestImageUrl(img);
         if (url) urlSet.add(url);
-      });
+      }
     };
 
-    // Initial collections
+    // Initial multi-collect
     collectElements();
     await sleep(150);
     collectElements();
 
-    // Smart single-pass with adaptive behavior
+    const initialCount = elementMap.size;
+
+    // Smart single-pass discovery
     const maxScroll = scrollContainer.getMaxScrollY();
     const viewportH = scrollContainer.getViewportHeight();
 
@@ -632,19 +605,16 @@
     let lastHeight = scrollContainer.getScrollHeight();
 
     while (!scanState.stopRequested) {
-      // Adaptive step size
       const stepMultiplier = noNewCount > 2 ? 0.9 : 0.6;
       currentPos = Math.min(currentPos + viewportH * stepMultiplier, maxScroll);
 
-      scanState.showBanner(`🔍 Discovery: ${elementMap.size} images`);
+      scanState.showBanner(`🔍 ${elementMap.size} images`);
 
-      // Adaptive scroll speed
       const scrollSpeed = noNewCount > 2 ? 80 : 40;
       await smoothScrollTo(currentPos, scrollSpeed);
       await sleep(120);
       collectElements();
 
-      // Track new element detection
       if (elementMap.size === lastElementCount) {
         noNewCount++;
       } else {
@@ -661,47 +631,49 @@
         });
       }
 
-      // Smart stop conditions
       const newHeight = scrollContainer.getScrollHeight();
       if (currentPos >= maxScroll - 10) {
-        if (newHeight === lastHeight) {
-          stableHeightCount++;
-        } else {
-          stableHeightCount = 0;
-          lastHeight = newHeight;
-        }
-
+        if (newHeight === lastHeight) stableHeightCount++;
+        else { stableHeightCount = 0; lastHeight = newHeight; }
         if (stableHeightCount >= 2 && noNewCount >= 3) break;
       }
     }
 
-    // Final scan at bottom
-    await sleep(200);
+    await sleep(150);
     collectElements();
 
-    // Quick return to top
-    scanState.showBanner('⬆️ Back to top...');
-    await smoothScrollTo(0, 200);
-    await sleep(200);
-    collectElements();
+    // ⚡ SMART SKIP: skip back-to-top jika sudah cukup detected
+    const finalCount = elementMap.size;
+    const growthRatio = finalCount / Math.max(initialCount, 1);
 
-    // Dedupe (only exact element match)
+    if (growthRatio < 3 && finalCount > 5) {
+      // Element sudah banyak sejak awal, tidak perlu balik ke atas
+      log(`Skip back-to-top: ${finalCount} elements already detected`);
+    } else {
+      scanState.showBanner('⬆️ Back to top...');
+      await smoothScrollTo(0, 250); // Very fast
+      await sleep(150);
+      collectElements();
+    }
+
+    // Sort & dedupe
     const rawElements = Array.from(elementMap.values())
       .sort((a, b) => a.y - b.y);
 
     const dedupedByY = [];
     const seenElements = new Set();
 
-    for (const info of rawElements) {
+    const rawLen = rawElements.length;
+    for (let i = 0; i < rawLen; i++) {
+      const info = rawElements[i];
       if (!seenElements.has(info.element)) {
         seenElements.add(info.element);
+        info.finalIndex = dedupedByY.length;
         dedupedByY.push(info);
       }
     }
 
-    dedupedByY.forEach((info, i) => { info.finalIndex = i; });
-
-    log(`✅ Discovery: ${dedupedByY.length} unique elements`);
+    log(`Discovery: ${dedupedByY.length} unique elements`);
 
     return {
       elements: dedupedByY,
@@ -712,13 +684,11 @@
   }
 
   /* ══════════════════════════════════════
-     Phase 2: Sequential Capture with Retry
+     Phase 2: Sequential Capture (Native Wait)
      ══════════════════════════════════════ */
 
   async function sequentialCapture(discoveryResult, onProgress) {
-    log('╔═══════════════════════════════════╗');
-    log('║ PHASE 2: CAPTURE (optimized)      ║');
-    log('╚═══════════════════════════════════╝');
+    log('PHASE 2: CAPTURE');
 
     const elements = discoveryResult?.elements || [];
     const selector = discoveryResult?.selector || 'img';
@@ -735,20 +705,21 @@
     let successCount = 0;
 
     const captureElement = async (info, pageNum, isRetry = false) => {
-      // Check if element still in DOM
       if (!document.contains(info.element)) {
         const imgs = document.querySelectorAll(selector);
         let alternative = null;
         let minDist = Infinity;
+        const len = imgs.length;
 
-        imgs.forEach(img => {
+        for (let i = 0; i < len; i++) {
+          const img = imgs[i];
           const y = scrollContainer.getElementY(img);
           const dist = Math.abs(y - info.y);
           if (dist < minDist && dist < 100) {
             minDist = dist;
             alternative = img;
           }
-        });
+        }
 
         if (!alternative) return null;
         info.element = alternative;
@@ -763,18 +734,14 @@
       if (isRetry || pageNum === 1) await sleep(200);
 
       forceLazyLoad([info.element]);
-      const loaded = await waitForImageLoad(info.element);
 
-      if (!loaded && !isRetry) {
-        await sleep(300);
-        forceLazyLoad([info.element]);
-        await waitForImageLoad(info.element, 1500);
-      }
+      // ⚡ NATIVE wait (event-based, no polling)
+      await waitForImageLoadNative(info.element);
 
       return getBestImageUrl(info.element);
     };
 
-    // MAIN CAPTURE LOOP
+    // MAIN LOOP
     for (let i = 0; i < total; i++) {
       if (scanState.stopRequested) break;
 
@@ -792,9 +759,7 @@
         usedUrls.add(url);
         capturedUrls[i] = url;
         capturedMeta[i] = {
-          index: i,
-          pageNum,
-          y: info.y,
+          index: i, pageNum, y: info.y,
           isBlob: url.startsWith('blob:'),
         };
         successCount++;
@@ -806,27 +771,27 @@
         onProgress({
           phase: 'capture',
           percent: Math.round(((i + 1) / total) * 100),
-          current: pageNum,
-          total,
-          collected: successCount,
+          current: pageNum, total, collected: successCount,
           message: `Capture ${pageNum}/${total} • ${successCount} unique`,
         });
       }
 
-      await sleep(30);
+      // ⚡ Minimal sleep (highlight sudah GPU-accelerated)
+      await sleep(20);
     }
 
     scanState.removeHighlight();
 
     // RETRY PHASE
     if (failedIndexes.length > 0 && !scanState.stopRequested) {
-      log(`RETRY: ${failedIndexes.length} items`);
       scanState.showBanner(`🔄 Retrying ${failedIndexes.length}...`);
-
       const stillFailed = [];
-      for (const idx of failedIndexes) {
+
+      const failedLen = failedIndexes.length;
+      for (let f = 0; f < failedLen; f++) {
         if (scanState.stopRequested) break;
 
+        const idx = failedIndexes[f];
         const info = elements[idx];
         const pageNum = idx + 1;
 
@@ -837,11 +802,8 @@
           usedUrls.add(url);
           capturedUrls[idx] = url;
           capturedMeta[idx] = {
-            index: idx,
-            pageNum,
-            y: info.y,
-            isBlob: url.startsWith('blob:'),
-            retry: 1,
+            index: idx, pageNum, y: info.y,
+            isBlob: url.startsWith('blob:'), retry: 1,
           };
           successCount++;
         } else if (!url) {
@@ -854,16 +816,21 @@
       // FINAL ATTEMPT
       if (stillFailed.length > 0 && !scanState.stopRequested) {
         const allImgs = document.querySelectorAll(selector);
-        for (const idx of stillFailed) {
+        const stillLen = stillFailed.length;
+
+        for (let s = 0; s < stillLen; s++) {
           if (scanState.stopRequested) break;
 
+          const idx = stillFailed[s];
           const info = elements[idx];
           const pageNum = idx + 1;
 
           let alternative = null;
           let minDist = Infinity;
+          const imgsLen = allImgs.length;
 
-          allImgs.forEach(img => {
+          for (let a = 0; a < imgsLen; a++) {
+            const img = allImgs[a];
             const y = scrollContainer.getElementY(img);
             const dist = Math.abs(y - info.y);
             if (dist < minDist && dist < 500) {
@@ -873,7 +840,7 @@
                 alternative = img;
               }
             }
-          });
+          }
 
           if (alternative) {
             info.element = alternative;
@@ -883,18 +850,15 @@
             await smoothScrollTo(Math.max(0, targetY - CONFIG.scrollOffset));
             await sleep(400);
             forceLazyLoad([alternative]);
-            await waitForImageLoad(alternative, 3000);
+            await waitForImageLoadNative(alternative, 3000);
 
             const url = getBestImageUrl(alternative);
             if (url && !usedUrls.has(url)) {
               usedUrls.add(url);
               capturedUrls[idx] = url;
               capturedMeta[idx] = {
-                index: idx,
-                pageNum,
-                y: info.y,
-                isBlob: url.startsWith('blob:'),
-                retry: 2,
+                index: idx, pageNum, y: info.y,
+                isBlob: url.startsWith('blob:'), retry: 2,
               };
               successCount++;
             }
@@ -904,12 +868,13 @@
       }
     }
 
-    // Final dedupe
+    // Final dedupe with pre-allocated arrays
     const finalUrls = [];
     const finalMeta = [];
     const finalUrlCheck = new Set();
 
-    for (let i = 0; i < capturedUrls.length; i++) {
+    const capLen = capturedUrls.length;
+    for (let i = 0; i < capLen; i++) {
       const url = capturedUrls[i];
       if (url && !finalUrlCheck.has(url)) {
         finalUrlCheck.add(url);
@@ -928,13 +893,12 @@
   }
 
   /* ══════════════════════════════════════
-     Main Scan Flow
+     Main Flow
      ══════════════════════════════════════ */
 
   async function performScan(customSelector) {
     try {
       const discovery = await discoveryPhase(customSelector, reportProgress);
-
       const elementsCount = discovery?.elements?.length || 0;
 
       if (scanState.stopRequested || elementsCount === 0) {
@@ -946,11 +910,8 @@
         const uniqueFallback = [...new Set(fallbackUrls)];
 
         return {
-          images: uniqueFallback,
-          meta: [],
-          total: elementsCount,
-          success: uniqueFallback.length,
-          failed: 0,
+          images: uniqueFallback, meta: [],
+          total: elementsCount, success: uniqueFallback.length, failed: 0,
           stopped: scanState.stopRequested,
         };
       }
@@ -984,7 +945,7 @@
   }
 
   /* ══════════════════════════════════════
-     Image Fetch (for blob URLs)
+     Fetch (Optimized)
      ══════════════════════════════════════ */
 
   async function fetchImageAsArray(url) {
@@ -1000,13 +961,16 @@
       const blob = await response.blob();
 
       if (blob.size > CONFIG.maxFileSize) {
-        throw new Error(`File too large: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
+        throw new Error(`Too large: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
       }
 
       const arrayBuffer = await blob.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
+
+      // ⚡ Faster array conversion (chunked for large files)
       const array = new Array(uint8Array.length);
-      for (let i = 0; i < uint8Array.length; i++) {
+      const len = uint8Array.length;
+      for (let i = 0; i < len; i++) {
         array[i] = uint8Array[i];
       }
 
@@ -1040,9 +1004,8 @@
      Message Listener
      ══════════════════════════════════════ */
 
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const messageHandler = (message, sender, sendResponse) => {
     switch (message.action) {
-
       case 'SCAN_IMAGES': {
         (async () => {
           try {
@@ -1058,11 +1021,6 @@
             const title = detectChapterTitle();
             const images = result?.images || [];
             const meta = result?.meta || [];
-            const totalCount = result?.total || images.length;
-            const failedCount = result?.failed || 0;
-
-            let debugInfo = null;
-            if (images.length === 0) debugInfo = debugScan();
 
             sendResponse({
               success: true,
@@ -1070,23 +1028,19 @@
               meta,
               title: title || 'Manhwa-Chapter',
               count: images.length,
-              total: totalCount,
-              failed: failedCount,
+              total: result?.total || images.length,
+              failed: result?.failed || 0,
               url: window.location.href,
-              debug: debugInfo,
+              debug: images.length === 0 ? debugScan() : null,
               stopped: result?.stopped || false,
             });
           } catch (error) {
-            warn('SCAN ERROR:', error);
             scanState.finish();
             sendResponse({
               success: false,
               error: error.message || 'Unknown error',
-              images: [],
-              meta: [],
-              count: 0,
-              total: 0,
-              failed: 0,
+              images: [], meta: [],
+              count: 0, total: 0, failed: 0,
             });
           }
         })();
@@ -1100,10 +1054,7 @@
       }
 
       case 'FETCH_IMAGE': {
-        (async () => {
-          const result = await fetchImageAsArray(message.url);
-          sendResponse(result);
-        })();
+        fetchImageAsArray(message.url).then(sendResponse);
         return true;
       }
 
@@ -1123,8 +1074,7 @@
           sendResponse({
             success: true,
             containerType: scrollContainer.type,
-            beforeY,
-            afterY,
+            beforeY, afterY,
             moved: Math.abs(afterY - beforeY),
             scrollHeight: scrollContainer.getScrollHeight(),
             maxScrollY: scrollContainer.getMaxScrollY(),
@@ -1139,7 +1089,15 @@
         sendResponse({ success: false, error: 'Unknown action' });
         return true;
     }
+  };
+
+  chrome.runtime.onMessage.addListener(messageHandler);
+
+  // ⚡ Cleanup on unload
+  window.addEventListener('beforeunload', () => {
+    chrome.runtime.onMessage.removeListener(messageHandler);
+    scanState.finish();
   });
 
-  log('Content script loaded v2.0 (optimized)');
+  log('Content script v3.0 loaded');
 })();

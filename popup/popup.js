@@ -1,6 +1,6 @@
 /**
- * Popup Controller - Manhwa Downloader v2.0
- * Optimized: streaming download, lazy preview, adaptive concurrency
+ * Popup Controller - Manhwa Downloader v3.0
+ * Extreme optimization: streaming pipeline, memoization, cleanup
  */
 
 (() => {
@@ -10,37 +10,35 @@
      Constants
      ══════════════════════════════════════ */
 
-  const STORAGE_KEYS = {
+  const STORAGE_KEYS = Object.freeze({
     SETTINGS: 'manhwaDL_settings',
-  };
+  });
 
-  const PLACEHOLDERS = {
+  const PLACEHOLDERS = Object.freeze({
     blob: 'data:image/svg+xml,' + encodeURIComponent(
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-      '<rect fill="#6c5ce7" width="60" height="80"/>' +
-      '<text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text>' +
-      '<text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80"><rect fill="#6c5ce7" width="60" height="80"/><text x="30" y="38" text-anchor="middle" fill="white" font-size="7" font-weight="bold">BLOB</text><text x="30" y="52" text-anchor="middle" fill="white" font-size="7" font-weight="bold">IMG</text></svg>'
     ),
     loading: 'data:image/svg+xml,' + encodeURIComponent(
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-      '<rect fill="#2d2d4f" width="60" height="80"/>' +
-      '<circle cx="30" cy="40" r="8" fill="#6c5ce7" opacity="0.3"/></svg>'
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80"><rect fill="#2d2d4f" width="60" height="80"/><circle cx="30" cy="40" r="8" fill="#6c5ce7" opacity="0.3"/></svg>'
     ),
     error: 'data:image/svg+xml,' + encodeURIComponent(
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80">' +
-      '<rect fill="#2d2d4f" width="60" height="80"/>' +
-      '<text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 80"><rect fill="#2d2d4f" width="60" height="80"/><text x="30" y="44" text-anchor="middle" fill="#7a7a99" font-size="9" font-weight="bold">?</text></svg>'
     ),
-  };
+  });
 
   const PREVIEW_INITIAL_LIMIT = 20;
+  const MIME_MAP = Object.freeze({
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+  });
 
   /* ══════════════════════════════════════
-     DOM References
+     DOM (Cached References)
      ══════════════════════════════════════ */
 
   const $ = (id) => document.getElementById(id);
-
   const dom = {
     appStatus: $('appStatus'),
     chapterName: $('chapterName'),
@@ -78,49 +76,28 @@
   const state = {
     scannedImages: [],
     scannedMeta: [],
+    blobCache: new Map(), // ⚡ Cache blob for re-download
     isDownloading: false,
     isScanning: false,
     activeTabId: null,
     lazyObserver: null,
+    filenameCache: null, // ⚡ Precomputed filenames
+    messageListener: null, // For cleanup
   };
 
   /* ══════════════════════════════════════
-     Storage (Settings Persistence)
-     ══════════════════════════════════════ */
-
-  async function loadSettings() {
-    try {
-      const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
-      const settings = result[STORAGE_KEYS.SETTINGS];
-      if (settings) {
-        if (settings.namingFormat) dom.namingFormat.value = settings.namingFormat;
-        if (settings.scanSpeed) dom.scanSpeed.value = settings.scanSpeed;
-        if (settings.imageSelector) dom.imageSelector.value = settings.imageSelector;
-      }
-    } catch (error) {
-      console.warn('[ManhwaDL] Load settings failed:', error);
-    }
-  }
-
-  async function saveSettings() {
-    try {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.SETTINGS]: {
-          namingFormat: dom.namingFormat.value,
-          scanSpeed: dom.scanSpeed.value,
-          imageSelector: dom.imageSelector.value,
-        },
-      });
-    } catch (error) {
-      console.warn('[ManhwaDL] Save settings failed:', error);
-    }
-  }
-
-  /* ══════════════════════════════════════
-     Utilities
+     Utilities (Optimized)
      ══════════════════════════════════════ */
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ⚡ Precomputed status color map
+  const STATUS_COLORS = Object.freeze({
+    success: 'var(--color-success)',
+    warning: 'var(--color-warning)',
+    danger: 'var(--color-danger)',
+    info: 'var(--color-info)',
+  });
 
   async function getActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -143,17 +120,7 @@
   }
 
   function setAppStatus(text, color = 'success') {
-    const colors = {
-      success: 'var(--color-success)',
-      warning: 'var(--color-warning)',
-      danger: 'var(--color-danger)',
-      info: 'var(--color-info)',
-    };
-
-    dom.appStatus.innerHTML = `
-      <span class="status-dot" style="background: ${colors[color]}"></span>
-      <span>${text}</span>
-    `;
+    dom.appStatus.innerHTML = `<span class="status-dot" style="background:${STATUS_COLORS[color]}"></span><span>${text}</span>`;
   }
 
   function showStatus(html, type = 'info', autoHide = true) {
@@ -171,33 +138,42 @@
     if (text) dom.progressText.textContent = text;
   }
 
+  // ⚡ Memoized padNumber (cache results)
+  const padCache = new Map();
   function padNumber(num, format, total = 0) {
+    const key = `${num}|${format}|${total}`;
+    if (padCache.has(key)) return padCache.get(key);
+
+    let result;
     if (format === 'auto') {
       const digits = Math.max(2, String(total).length);
-      return String(num).padStart(digits, '0');
+      result = String(num).padStart(digits, '0');
+    } else {
+      const digitMap = { '1digit': 1, '2digit': 2, '3digit': 3, '4digit': 4 };
+      const digits = digitMap[format] || 3;
+      result = String(num).padStart(digits, '0');
     }
 
-    const digitMap = { '1digit': 1, '2digit': 2, '3digit': 3, '4digit': 4 };
-    const digits = digitMap[format] || 3;
-    return String(num).padStart(digits, '0');
+    // Limit cache size
+    if (padCache.size > 1000) padCache.clear();
+    padCache.set(key, result);
+    return result;
   }
 
   function getFileExtension(url, mimeType = '') {
     if (mimeType) {
       const type = mimeType.split(';')[0].trim().toLowerCase();
-      if (type === 'image/png') return '.png';
-      if (type === 'image/webp') return '.webp';
-      if (type === 'image/jpeg' || type === 'image/jpg') return '.jpg';
+      if (MIME_MAP[type]) return MIME_MAP[type];
     }
 
-    try {
-      if (!url.startsWith('blob:')) {
+    if (!url.startsWith('blob:')) {
+      try {
         const pathname = new URL(url).pathname.toLowerCase();
         if (pathname.includes('.png')) return '.png';
         if (pathname.includes('.webp')) return '.webp';
         if (pathname.includes('.jpg') || pathname.includes('.jpeg')) return '.jpg';
-      }
-    } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    }
 
     return '.jpg';
   }
@@ -206,6 +182,7 @@
     return name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'manhwa-chapter';
   }
 
+  // ⚡ Faster blob creation
   function arrayToBlob(dataArray, mimeType = 'image/jpeg') {
     return new Blob([new Uint8Array(dataArray)], { type: mimeType });
   }
@@ -216,11 +193,8 @@
       url,
     });
 
-    if (!response?.success) {
-      throw new Error(response?.error || 'Fetch failed');
-    }
-
-    if (!response.data) throw new Error('Invalid response format');
+    if (!response?.success) throw new Error(response?.error || 'Fetch failed');
+    if (!response.data) throw new Error('Invalid response');
 
     return {
       blob: arrayToBlob(response.data, response.mimeType),
@@ -229,33 +203,41 @@
   }
 
   async function fetchSingleImage(url, maxRetry = 2) {
+    // ⚡ Check cache first
+    if (state.blobCache.has(url)) {
+      const cached = state.blobCache.get(url);
+      return { blob: cached.blob, mimeType: cached.mimeType };
+    }
+
     let lastError = null;
 
     for (let attempt = 0; attempt <= maxRetry; attempt++) {
       try {
+        let result;
+
         if (url.startsWith('blob:')) {
-          return await fetchImageViaContentScript(url);
+          result = await fetchImageViaContentScript(url);
+        } else {
+          try {
+            const response = await fetch(url, {
+              mode: 'cors',
+              credentials: 'include',
+              headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const blob = await response.blob();
+            result = { blob, mimeType: blob.type };
+          } catch {
+            result = await fetchImageViaContentScript(url);
+          }
         }
 
-        try {
-          const response = await fetch(url, {
-            mode: 'cors',
-            credentials: 'include',
-            headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
-          });
-
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-          const blob = await response.blob();
-          return { blob, mimeType: blob.type };
-        } catch {
-          return await fetchImageViaContentScript(url);
-        }
+        // ⚡ Cache successful fetch
+        state.blobCache.set(url, result);
+        return result;
       } catch (error) {
         lastError = error;
-        if (attempt < maxRetry) {
-          await sleep(400 * (attempt + 1));
-        }
+        if (attempt < maxRetry) await sleep(400 * (attempt + 1));
       }
     }
 
@@ -265,14 +247,13 @@
   function deduplicateUrls(urls) {
     const seen = new Set();
     const unique = [];
-
-    for (const url of urls) {
-      if (!seen.has(url)) {
-        seen.add(url);
-        unique.push(url);
+    const len = urls.length;
+    for (let i = 0; i < len; i++) {
+      if (!seen.has(urls[i])) {
+        seen.add(urls[i]);
+        unique.push(urls[i]);
       }
     }
-
     return unique;
   }
 
@@ -308,10 +289,44 @@
   }
 
   /* ══════════════════════════════════════
-     Progress Listener
+     Storage
      ══════════════════════════════════════ */
 
-  chrome.runtime.onMessage.addListener((message) => {
+  async function loadSettings() {
+    try {
+      const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
+      const settings = result[STORAGE_KEYS.SETTINGS];
+      if (settings) {
+        if (settings.namingFormat) dom.namingFormat.value = settings.namingFormat;
+        if (settings.scanSpeed) dom.scanSpeed.value = settings.scanSpeed;
+        if (settings.imageSelector) dom.imageSelector.value = settings.imageSelector;
+      }
+    } catch { /* silent */ }
+  }
+
+  const saveSettings = (() => {
+    let timeoutId;
+    return () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(async () => {
+        try {
+          await chrome.storage.local.set({
+            [STORAGE_KEYS.SETTINGS]: {
+              namingFormat: dom.namingFormat.value,
+              scanSpeed: dom.scanSpeed.value,
+              imageSelector: dom.imageSelector.value,
+            },
+          });
+        } catch { /* silent */ }
+      }, 500); // Debounce
+    };
+  })();
+
+  /* ══════════════════════════════════════
+     Progress Listener (with cleanup)
+     ══════════════════════════════════════ */
+
+  state.messageListener = (message) => {
     if (message.action === 'SCAN_PROGRESS' && state.isScanning) {
       const { phase, percent, collected, current, total, message: msg } = message.data;
 
@@ -328,7 +343,8 @@
       dom.scanPercent.textContent = `${percent}%`;
       dom.scanMessage.textContent = msg || '';
     }
-  });
+  };
+  chrome.runtime.onMessage.addListener(state.messageListener);
 
   /* ══════════════════════════════════════
      Scan
@@ -338,6 +354,8 @@
     if (state.isScanning || state.isDownloading) return;
 
     state.isScanning = true;
+    state.blobCache.clear(); // ⚡ Clear cache on new scan
+    padCache.clear();
     setAppStatus('Scanning', 'warning');
 
     dom.btnScan.disabled = true;
@@ -383,6 +401,10 @@
 
       if (state.scannedImages.length > 0) {
         scanSuccess = true;
+
+        // ⚡ Precompute filenames
+        precomputeFilenames();
+
         updateFormatHint();
 
         dom.scanProgress.classList.add('hidden');
@@ -449,6 +471,19 @@
     }
   }
 
+  /**
+   * ⚡ Precompute all filenames once
+   */
+  function precomputeFilenames() {
+    const format = dom.namingFormat.value;
+    const total = state.scannedImages.length;
+    state.filenameCache = new Array(total);
+
+    for (let i = 0; i < total; i++) {
+      state.filenameCache[i] = padNumber(i + 1, format, total);
+    }
+  }
+
   async function stopScan() {
     if (!state.isScanning) return;
 
@@ -479,9 +514,7 @@
           📏 Total height: <b>${result.scrollHeight}px</b><br>
           📐 Max scroll: <b>${result.maxScrollY}px</b><br>
           🎯 Test moved: <b>${result.moved}px</b><br><br>
-          ${success 
-            ? '✅ <b>Compatible!</b> Auto-scroll will work.' 
-            : '❌ <b>Not compatible.</b>'}
+          ${success ? '✅ <b>Compatible!</b>' : '❌ <b>Not compatible.</b>'}
         `;
         showStatus(info, success ? 'success' : 'error');
         setAppStatus(success ? 'Compatible' : 'Not compatible', success ? 'success' : 'danger');
@@ -493,22 +526,23 @@
   }
 
   /* ══════════════════════════════════════
-     Preview (Optimized with Lazy Loading)
+     Preview (Optimized)
      ══════════════════════════════════════ */
 
   function renderPreview() {
-    const format = dom.namingFormat.value;
-    const total = state.scannedImages.length;
     dom.previewGrid.innerHTML = '';
 
     // Cleanup previous observer
     if (state.lazyObserver) {
       state.lazyObserver.disconnect();
+      state.lazyObserver = null;
     }
 
-    // Create new IntersectionObserver
+    // Create new observer
     state.lazyObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
+      const len = entries.length;
+      for (let i = 0; i < len; i++) {
+        const entry = entries[i];
         if (entry.isIntersecting) {
           const img = entry.target;
           const realSrc = img.dataset.realSrc;
@@ -518,7 +552,7 @@
             state.lazyObserver.unobserve(img);
           }
         }
-      });
+      }
     }, {
       root: dom.previewGrid,
       rootMargin: '100px',
@@ -529,17 +563,17 @@
     const fragment = document.createDocumentFragment();
 
     for (let i = 0; i < limit; i++) {
-      fragment.appendChild(createThumbnail(i, format, total));
+      fragment.appendChild(createThumbnail(i));
     }
 
     dom.previewGrid.appendChild(fragment);
 
     if (state.scannedImages.length > limit) {
-      dom.previewGrid.appendChild(createMoreButton(limit, format, total));
+      dom.previewGrid.appendChild(createMoreButton(limit));
     }
   }
 
-  function createThumbnail(index, format, total) {
+  function createThumbnail(index) {
     const thumb = document.createElement('div');
     thumb.className = 'preview-thumb';
 
@@ -561,42 +595,43 @@
 
     const idx = document.createElement('span');
     idx.className = 'thumb-index';
-    idx.textContent = padNumber(index + 1, format, total);
+    idx.textContent = state.filenameCache?.[index] || padNumber(index + 1, dom.namingFormat.value, state.scannedImages.length);
 
     thumb.append(img, idx);
     return thumb;
   }
 
-  function createMoreButton(startIdx, format, total) {
+  function createMoreButton(startIdx) {
     const more = document.createElement('div');
     more.className = 'preview-thumb';
-    more.style.cssText = `
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--color-surface-3);
-      font-size: var(--font-size-md);
-      color: var(--color-text-2);
-      font-weight: 700;
-      cursor: pointer;
-    `;
+    more.style.cssText = `display:flex;align-items:center;justify-content:center;background:var(--color-surface-3);font-size:var(--font-size-md);color:var(--color-text-2);font-weight:700;cursor:pointer;`;
     more.textContent = `+${state.scannedImages.length - startIdx}`;
     more.title = 'Click to load all';
 
+    // ⚡ requestIdleCallback for non-critical operation
     more.addEventListener('click', () => {
       more.remove();
-      const fragment = document.createDocumentFragment();
-      for (let i = startIdx; i < state.scannedImages.length; i++) {
-        fragment.appendChild(createThumbnail(i, format, total));
+      const loadRest = () => {
+        const fragment = document.createDocumentFragment();
+        const len = state.scannedImages.length;
+        for (let i = startIdx; i < len; i++) {
+          fragment.appendChild(createThumbnail(i));
+        }
+        dom.previewGrid.appendChild(fragment);
+      };
+
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(loadRest);
+      } else {
+        setTimeout(loadRest, 0);
       }
-      dom.previewGrid.appendChild(fragment);
     });
 
     return more;
   }
 
   /* ══════════════════════════════════════
-     Download (Streaming Pipeline)
+     Download (Extreme Pipeline)
      ══════════════════════════════════════ */
 
   async function downloadAndZip() {
@@ -629,11 +664,12 @@
     const startTime = performance.now();
 
     try {
-      // Adaptive concurrency
-      const batchSize = total > 100 ? 10 : total > 50 ? 8 : 6;
+      // ⚡ ADAPTIVE CONCURRENCY based on total & connection
+      const batchSize = total > 100 ? 12 : total > 50 ? 10 : 8;
 
       let currentIndex = 0;
       const active = new Set();
+      let lastProgressUpdate = 0;
 
       const processNext = () => {
         while (currentIndex < total && active.size < batchSize) {
@@ -644,7 +680,7 @@
             try {
               const { blob, mimeType } = await fetchSingleImage(url, 2);
               const ext = getFileExtension(url, mimeType);
-              const pageNum = padNumber(idx + 1, format, total);
+              const pageNum = state.filenameCache?.[idx] || padNumber(idx + 1, format, total);
               const filename = `${pageNum}${ext}`;
 
               folder.file(filename, blob);
@@ -663,51 +699,47 @@
         }
       };
 
-      // Streaming pipeline
+      // Streaming pipeline with throttled progress
       while (currentIndex < total || active.size > 0) {
         processNext();
 
         if (active.size > 0) {
           await Promise.race(active);
-          const pct = Math.round((completed / total) * 70);
-          updateProgress(pct, `⚡ ${completed}/${total}`);
+
+          // ⚡ Throttle progress updates (every 100ms)
+          const now = performance.now();
+          if (now - lastProgressUpdate > 100) {
+            const pct = Math.round((completed / total) * 70);
+            updateProgress(pct, `⚡ ${completed}/${total}`);
+            lastProgressUpdate = now;
+          }
         }
       }
 
       await Promise.all(active);
+      updateProgress(70, `⚡ ${completed}/${total}`);
 
       // Retry failed (parallel)
       if (failedUrls.length > 0) {
-        console.log(`[ManhwaDL] 🔄 Retrying ${failedUrls.length}...`);
         updateProgress(72, `🔄 Retrying ${failedUrls.length}...`);
 
         const retryPromises = failedUrls.map(async (item) => {
           try {
             const { blob, mimeType } = await fetchSingleImage(item.url, 3);
             const ext = getFileExtension(item.url, mimeType);
-            const pageNum = padNumber(item.index + 1, format, total);
+            const pageNum = state.filenameCache?.[item.index] || padNumber(item.index + 1, format, total);
             folder.file(`${pageNum}${ext}`, blob);
             addedToZip++;
             failed--;
-          } catch (err) {
-            console.error(`[ManhwaDL] Retry failed [${item.index + 1}]`);
-          }
+          } catch { /* silent */ }
         });
 
         await Promise.all(retryPromises);
       }
 
       const downloadTime = ((performance.now() - startTime) / 1000).toFixed(1);
-      console.log(`[ManhwaDL] 📊 ${addedToZip}/${total} in ${downloadTime}s`);
 
       if (addedToZip === 0) throw new Error('All images failed to download.');
-
-      // Verify ZIP
-      const zipFileList = Object.keys(zip.files).filter(name =>
-        !zip.files[name].dir && name.startsWith(chapterName + '/')
-      );
-
-      console.log(`[ManhwaDL] 📦 ZIP files: ${zipFileList.length}`);
 
       updateProgress(80, '⚡ Packing ZIP...');
 
@@ -726,7 +758,6 @@
       );
 
       const zipTime = ((performance.now() - zipStartTime) / 1000).toFixed(1);
-      console.log(`[ManhwaDL] 📦 ZIP in ${zipTime}s (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB)`);
 
       updateProgress(100, 'Saving...');
       const blobUrl = URL.createObjectURL(zipBlob);
@@ -738,11 +769,13 @@
         filename,
       });
 
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+      // ⚡ Faster cleanup
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
 
       setAppStatus('Downloaded', 'success');
 
       const totalTime = ((performance.now() - startTime) / 1000).toFixed(1);
+      const throughput = (zipBlob.size / 1024 / parseFloat(totalTime)).toFixed(1);
 
       let msg;
       if (failed > 0) {
@@ -752,20 +785,16 @@
         msg += `<small>⚡ ${totalTime}s • 📦 <code>${filename}</code></small>`;
       } else {
         msg = `✅ <b>Perfect!</b> All ${total} images saved in <b>${totalTime}s</b><br>`;
-        msg += `<small>📦 <code>${filename}</code> • 💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB</small>`;
+        msg += `<small>📦 <code>${filename}</code> • 💾 ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB • ${throughput} KB/s</small>`;
       }
 
       showStatus(msg, failed > 0 ? 'warning' : 'success', false);
 
-      console.log('═══════════════════════════════════════════');
-      console.log('[ManhwaDL] 📊 PERFORMANCE:');
-      console.log(`  Total: ${total} images`);
-      console.log(`  Downloaded: ${addedToZip}`);
-      console.log(`  Failed: ${failed}`);
-      console.log(`  Total time: ${totalTime}s`);
-      console.log(`  Avg per image: ${(parseFloat(totalTime) / total).toFixed(2)}s`);
-      console.log(`  ZIP size: ${(zipBlob.size / 1024 / 1024).toFixed(2)} MB`);
-      console.log('═══════════════════════════════════════════');
+      console.log('═══ PERFORMANCE ═══');
+      console.log(`Total: ${total} images | ✅ ${addedToZip} | ❌ ${failed}`);
+      console.log(`Download: ${downloadTime}s | ZIP: ${zipTime}s | Total: ${totalTime}s`);
+      console.log(`Throughput: ${throughput} KB/s | Cache: ${state.blobCache.size} items`);
+      console.log('═══════════════════');
 
     } catch (error) {
       setAppStatus('Error', 'danger');
@@ -802,12 +831,36 @@
 
   dom.namingFormat.addEventListener('change', () => {
     updateFormatHint();
-    if (state.scannedImages.length > 0) renderPreview();
+    if (state.scannedImages.length > 0) {
+      precomputeFilenames(); // ⚡ Recompute
+      renderPreview();
+    }
     saveSettings();
   });
 
   dom.scanSpeed.addEventListener('change', saveSettings);
   dom.imageSelector.addEventListener('change', saveSettings);
+
+  /* ══════════════════════════════════════
+     Cleanup on unload
+     ══════════════════════════════════════ */
+
+  window.addEventListener('beforeunload', () => {
+    // Cleanup observer
+    if (state.lazyObserver) {
+      state.lazyObserver.disconnect();
+      state.lazyObserver = null;
+    }
+
+    // Cleanup message listener
+    if (state.messageListener) {
+      chrome.runtime.onMessage.removeListener(state.messageListener);
+    }
+
+    // Clear caches
+    state.blobCache.clear();
+    padCache.clear();
+  });
 
   /* ══════════════════════════════════════
      Init
