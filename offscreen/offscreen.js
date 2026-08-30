@@ -245,6 +245,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         if (!megaZip) throw new Error('No chapters to merge');
+
+        // Part terakhir kosong (semua sudah ter-flush saat split) →
+        // jangan download arsip kosong.
+        if (megaBytes === 0) {
+          megaZip = null;
+          megaActive = false;
+          sendResponse({ success: true });
+          return;
+        }
+
         progress('Merging chapters', 90);
         const blob = await megaZip.generateAsync({ type: 'blob', compression: 'STORE' });
         megaZip = null;
