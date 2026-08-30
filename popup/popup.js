@@ -68,6 +68,7 @@
     progressText: $('progressText'),
     statusMessage: $('statusMessage'),
     btnText: document.querySelector('.btn-text'),
+    btnLoading: document.querySelector('.btn-loading'),
   };
 
   /* ══════════════════════════════════════
@@ -345,14 +346,10 @@
         if (settings.imageSelector) dom.imageSelector.value = settings.imageSelector;
         if (dom.askSaveLocation && typeof settings.askSaveLocation === 'boolean') {
           dom.askSaveLocation.checked = settings.askSaveLocation;
-          useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false
         }
                 if (dom.useSubfolder && typeof settings.useSubfolder === 'boolean') {
           dom.useSubfolder.checked = settings.useSubfolder;
         }
-          if (dom.useSubfolder) {
-    dom.useSubfolder.addEventListener('change', saveSettings);
-  }
       }
     } catch (e) {
       // Silent
@@ -821,6 +818,7 @@
         dataUrl: blobUrl,
         filename: filename,
         saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
       });
 
       setAppStatus('Downloaded', 'success');
@@ -886,7 +884,10 @@
   dom.imageSelector.addEventListener('change', saveSettings);
   if (dom.askSaveLocation) {
     dom.askSaveLocation.addEventListener('change', saveSettings);
+  }  if (dom.useSubfolder) {
+    dom.useSubfolder.addEventListener('change', saveSettings);
   }
+
 
   /* ══════════════════════════════════════
      Cleanup
@@ -1465,6 +1466,7 @@ await chrome.runtime.sendMessage({
   dataUrl: blobUrl,
   filename: filename,
   saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
 });
 
         updateBatchItem(index, 'success', completed + '✓', completed);
@@ -1738,6 +1740,7 @@ await chrome.runtime.sendMessage({
             dataUrl: blobUrl,
             filename: mergedFilename,
             saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
           });
 
           updateBatchCurrent('Complete!', 'Merged ZIP saved', 100);
