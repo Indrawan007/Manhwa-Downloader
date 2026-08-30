@@ -194,7 +194,19 @@
 
   function base64ToBlob(base64, mimeType) {
     mimeType = mimeType || 'image/jpeg';
-    const byteString = atob(base64);
+
+    let data = String(base64 || '');
+
+    // Kalau ternyata data URL (data:...;base64,XXXX) → ambil bagian base64-nya saja
+    const m = data.match(/^data:[^;,]*;base64,/i);
+    if (m) data = data.slice(m[0].length);
+
+    // Buang whitespace/newline yang mungkin nyempil
+    data = data.replace(/\s+/g, '');
+
+    if (!data) throw new Error('Empty image data');
+
+    const byteString = atob(data);
     const len = byteString.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {

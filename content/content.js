@@ -1131,8 +1131,12 @@
       }
 
       default:
-        sendResponse({ success: false, error: 'Unknown action' });
-        return true;
+        // Jangan membalas aksi yang tidak dikenal. Content script ikut menerima
+        // broadcast chrome.runtime.sendMessage (OFFSCREEN_PING, START_BATCH,
+        // GET_BATCH_STATE, BATCH_PROGRESS, dll.) dari background/popup. Kalau
+        // ikut membalas, respons {success:false} bisa menyalip respons background
+        // dan membuat popup mengira batch gagal (atau progress tidak ter-restore).
+        return false;
     }
   };
 
