@@ -1,5 +1,5 @@
 /**
- * Popup Controller - Manhwa Downloader v3.1
+ * Popup Controller - Manhwa Downloader v2.1.1
  * Full fixed version with batch mode support
  */
 
@@ -791,8 +791,6 @@
 
         await Promise.all(retryPromises);
       }
-
-      const downloadTime = ((performance.now() - startTime) / 1000).toFixed(1);
 
       if (addedToZip === 0) throw new Error('All images failed to download.');
 

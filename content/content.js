@@ -1,5 +1,5 @@
 /**
- * Content Script - Manhwa Downloader v3.0
+ * Content Script - Manhwa Downloader v2.1.1
  * Extreme optimization: pipeline, native APIs, smart discovery
  */
 
@@ -1144,5 +1144,5 @@
     scanState.finish();
   });
 
-  log('Content script v3.0 loaded');
+  log('Content script v2.1.1 loaded');
 })();

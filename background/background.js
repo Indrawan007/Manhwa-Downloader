@@ -1,26 +1,19 @@
 /**
- * Background Service Worker - Manhwa Downloader v3.3
+ * Background Service Worker - Manhwa Downloader v2.1.1
  * - Auto-save with organized folder structure
  * - CORS-free image fetch
  * - Batch engine: survives popup close / tab switching (runs entirely here)
+ * - ZIP dibangun & diunduh lewat offscreen document (Blob URL) supaya
+ *   tidak kena limit data:-URL dan lebih hemat memori.
  */
 
 'use strict';
-
-importScripts('../lib/jszip.min.js');
 
 const LOG_PREFIX = '[ManhwaDL-BG]';
 const DEFAULT_SUBFOLDER = 'Manhwa Downloader';
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
 const FETCH_TIMEOUT = 15000;            // 15 s
-const KEEPALIVE_INTERVAL = 20000;       // 20 s — keep SW alive during long batch
-
-const MIME_MAP = Object.freeze({
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-});
+const KEEPALIVE_INTERVAL = 15000;       // 15 s — keep SW alive during long batch
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -37,44 +30,12 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function base64ToBytes(base64) {
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
 function sanitizeFilename(name) {
   return String(name || '')
     .replace(/[<>:"/\\|?*]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .substring(0, 100) || 'manhwa-chapter';
-}
-
-function padNumber(num, format, total) {
-  total = total || 0;
-  let digits;
-  if (format === 'auto') digits = Math.max(2, String(total).length);
-  else digits = ({ '1digit': 1, '2digit': 2, '3digit': 3, '4digit': 4 })[format] || 3;
-  return String(num).padStart(digits, '0');
-}
-
-function getFileExtension(url, mimeType) {
-  mimeType = mimeType || '';
-  if (mimeType) {
-    const type = mimeType.split(';')[0].trim().toLowerCase();
-    if (MIME_MAP[type]) return MIME_MAP[type];
-  }
-  if (url && !url.startsWith('blob:')) {
-    try {
-      const pathname = new URL(url).pathname.toLowerCase();
-      if (pathname.includes('.png')) return '.png';
-      if (pathname.includes('.webp')) return '.webp';
-      if (pathname.includes('.jpg') || pathname.includes('.jpeg')) return '.jpg';
-    } catch (e) { /* ignore */ }
-  }
-  return '.jpg';
 }
 
 function titleFromUrl(url) {
@@ -91,10 +52,9 @@ function titleFromUrl(url) {
 }
 
 /* ══════════════════════════════════════
-   Image fetch
+   Image fetch (base64 — dipakai popup single-mode & blob path)
    ══════════════════════════════════════ */
 
-// Base64 (dipakai popup single-mode & content-script blob path)
 async function fetchImageAsBase64(url) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
@@ -109,24 +69,6 @@ async function fetchImageAsBase64(url) {
   } catch (error) {
     clearTimeout(timeoutId);
     return { success: false, error: error.name === 'AbortError' ? 'Timeout' : error.message };
-  }
-}
-
-// Bytes langsung (dipakai batch engine untuk ZIP)
-async function fetchImageBytes(url) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-  try {
-    const response = await fetch(url, { signal: controller.signal, credentials: 'include' });
-    clearTimeout(timeoutId);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    if (bytes.length > MAX_FILE_SIZE) throw new Error(`Too large: ${(bytes.length / 1048576).toFixed(1)}MB`);
-    return { data: bytes, mimeType: (response.headers.get('content-type') || '').split(';')[0].trim() };
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw new Error(error.name === 'AbortError' ? 'Timeout' : error.message);
   }
 }
 
@@ -148,7 +90,7 @@ const batch = {
   currentTitle: '',
   currentStatus: '',
   currentPercent: 0,
-  megaZip: null,    // merge mode
+  usedFolders: null, // Set — anti-tabrakan nama folder di merge mode
   keepaliveId: null,
 };
 
@@ -180,6 +122,7 @@ function broadcastProgress() {
 function startKeepalive() {
   if (batch.keepaliveId) return;
   batch.keepaliveId = setInterval(() => {
+    // Reset idle timer SW agar tidak dimatikan di tengah batch.
     try { chrome.runtime.getPlatformInfo(() => {}); } catch (e) { /* ignore */ }
   }, KEEPALIVE_INTERVAL);
 }
@@ -203,17 +146,79 @@ async function activateTab(tabId) {
   try { await chrome.tabs.update(tabId, { active: true }); } catch (e) { /* ignore */ }
 }
 
-async function waitForTabLoad(tabId, timeout = 45000) {
+/**
+ * Tunggu sampai tab benar-benar selesai load (status 'complete') setelah
+ * navigasi. Pakai onUpdated + register listener SEBELUM navigasi dimulai,
+ * supaya tidak melewatkan event 'complete' (fix race condition yang bisa
+ * membuat halaman lama ter-scan dua kali).
+ */
+function waitForTabComplete(tabId, timeout = 45000) {
+  const start = Date.now();
+  let timer = null;
+  let settled = false;
+  let resolve, reject;
+
+  const cleanup = () => {
+    if (timer) clearInterval(timer);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
+  };
+
+  const onUpdated = (tId, changeInfo) => {
+    if (tId !== tabId) return;
+    if (changeInfo.status === 'complete') {
+      if (!settled) { settled = true; cleanup(); resolve(); }
+    }
+  };
+
+  chrome.tabs.onUpdated.addListener(onUpdated);
+
+  timer = setInterval(() => {
+    if (batch.stopRequested) {
+      settled = true; cleanup(); reject(new Error('Stopped'));
+    } else if (Date.now() - start > timeout) {
+      settled = true; cleanup(); reject(new Error('Tab load timeout'));
+    }
+  }, 250);
+
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  promise.cancel = () => { if (!settled) { settled = true; cleanup(); } };
+  return promise;
+}
+
+async function navigateTab(tabId, url) {
+  let currentUrl = '';
+  try { const t = await chrome.tabs.get(tabId); currentUrl = t.url || ''; } catch (e) { /* ignore */ }
+
+  // Navigasi ke URL yang sama tidak memicu onUpdated → skip langsung.
+  if (currentUrl === url) { await sleep(400); return; }
+
+  const loadPromise = waitForTabComplete(tabId);
+  try {
+    await chrome.tabs.update(tabId, { url });
+  } catch (e) {
+    loadPromise.cancel();
+    throw e;
+  }
+  await loadPromise;
+}
+
+/**
+ * Tunggu sampai URL tab berubah + status 'complete' (dipakai setelah klik
+ * tombol "next" yang tidak punya href, menggantikan sleep(3000) yang rawan).
+ */
+async function waitForUrlChange(tabId, timeout = 15000) {
+  let oldUrl = '';
+  try { const t = await chrome.tabs.get(tabId); oldUrl = t.url || ''; } catch (e) { /* ignore */ }
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (batch.stopRequested) throw new Error('Stopped');
+    if (batch.stopRequested) return null;
     try {
-      const tab = await chrome.tabs.get(tabId);
-      if (tab.status === 'complete') return;
-    } catch (e) { /* tab may be closed */ }
-    await sleep(300);
+      const t = await chrome.tabs.get(tabId);
+      if (t.url && t.url !== oldUrl && t.status === 'complete') return t.url;
+    } catch (e) { /* tab closed */ }
+    await sleep(250);
   }
-  throw new Error('Tab load timeout');
+  return null;
 }
 
 async function ensureContentScriptReady(tabId, maxRetry = 5) {
@@ -250,13 +255,50 @@ async function scanChapter(tabId, config) {
   return { images, title: res.title || '' };
 }
 
-async function fetchImage(url, tabId) {
-  if (url.startsWith('blob:')) {
-    const res = await chrome.tabs.sendMessage(tabId, { action: 'FETCH_IMAGE', url });
-    if (!res || !res.success || !res.data) throw new Error((res && res.error) || 'Fetch failed');
-    return { data: base64ToBytes(res.data), mimeType: res.mimeType };
+/* ══════════════════════════════════════
+   Offscreen document (ZIP builder + Blob URL downloader)
+   ══════════════════════════════════════ */
+
+async function ensureOffscreenDoc() {
+  if (chrome.offscreen.hasDocument) {
+    try { if (await chrome.offscreen.hasDocument()) return; } catch (e) { /* ignore */ }
   }
-  return fetchImageBytes(url);
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen/offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'ZIP files must be built and downloaded as Blob URLs; URL.createObjectURL is unavailable in MV3 service workers.',
+    });
+  } catch (e) {
+    if (chrome.offscreen.hasDocument) {
+      try { if (await chrome.offscreen.hasDocument()) return; } catch (e2) { /* ignore */ }
+    }
+    throw e;
+  }
+  // Handshake: pastikan listener offscreen sudah siap.
+  for (let i = 0; i < 5; i++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ action: 'OFFSCREEN_PING' });
+      if (res && res.alive) return;
+    } catch (e) { /* not ready yet */ }
+    await sleep(200);
+  }
+}
+
+async function closeOffscreenDoc() {
+  try { await chrome.offscreen.closeDocument(); } catch (e) { /* ignore */ }
+}
+
+async function sendToOffscreen(action, payload) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await ensureOffscreenDoc();
+    try {
+      return await chrome.runtime.sendMessage(Object.assign({ action }, payload || {}));
+    } catch (e) {
+      if (attempt === 0) { try { await closeOffscreenDoc(); } catch (e2) { /* ignore */ } continue; }
+      throw e;
+    }
+  }
 }
 
 /* ══════════════════════════════════════
@@ -269,8 +311,7 @@ async function processChapter(url, index, config) {
   batch.currentPercent = 5;
   broadcastProgress();
 
-  await chrome.tabs.update(tabId, { url });
-  await waitForTabLoad(tabId);
+  await navigateTab(tabId, url);
   await sleep(1200);
   await ensureContentScriptReady(tabId);
 
@@ -281,6 +322,17 @@ async function processChapter(url, index, config) {
   } catch (e) { /* ignore */ }
   if (!title) title = titleFromUrl(url) || ('Chapter-' + (index + 1));
   title = sanitizeFilename(title);
+
+  // Anti-tabrakan nama folder di merge mode (2 chapter berjudul sama → folder beda).
+  let folderName = title;
+  if (config.mergeZip) {
+    if (batch.usedFolders.has(folderName.toLowerCase())) {
+      let n = 2;
+      while (batch.usedFolders.has(folderName.toLowerCase())) folderName = title + ' (' + (n++) + ')';
+    }
+    batch.usedFolders.add(folderName.toLowerCase());
+  }
+
   batch.currentTitle = title;
   batch.results[index] = { title, status: 'active', images: 0 };
 
@@ -295,79 +347,24 @@ async function processChapter(url, index, config) {
   batch.currentPercent = 40;
   broadcastProgress();
 
-  const zip = config.mergeZip ? null : new JSZip();
-  const folder = config.mergeZip ? batch.megaZip.folder(title) : zip.folder(title);
+  const zipRes = await sendToOffscreen('BUILD_ZIP', {
+    tabId,
+    folderName,
+    title,
+    urls: images,
+    namingFormat: config.namingFormat,
+    merge: !!config.mergeZip,
+    filename: title + '.zip',
+    saveAs: config.saveAs === true,
+    useSubfolder: config.useSubfolder !== false,
+  });
 
-  let completed = 0;
-  let failed = 0;
-  const failedList = [];
-  const concurrency = 6;
-  let idx = 0;
-  const active = new Set();
-
-  const processNext = () => {
-    while (idx < total && active.size < concurrency) {
-      const i = idx++;
-      const task = (async () => {
-        try {
-          const { data, mimeType } = await fetchImage(images[i], tabId);
-          const ext = getFileExtension(images[i], mimeType);
-          folder.file(padNumber(i + 1, config.namingFormat, total) + ext, data);
-          completed++;
-        } catch (e) {
-          failed++;
-          failedList.push({ index: i, url: images[i] });
-          console.error(`${LOG_PREFIX} ❌ image ${i + 1}:`, e.message);
-        }
-        active.delete(task);
-      })();
-      active.add(task);
-    }
-  };
-
-  while (idx < total || active.size > 0) {
-    processNext();
-    if (active.size > 0) {
-      await Promise.race(active);
-      batch.currentStatus = 'Downloading ' + completed + '/' + total;
-      batch.currentPercent = 40 + Math.round((completed / Math.max(total, 1)) * 40);
-      broadcastProgress();
-    }
-  }
-  await Promise.all(active);
-
-  if (failedList.length && !batch.stopRequested) {
-    batch.currentStatus = 'Retrying ' + failedList.length;
-    broadcastProgress();
-    for (const item of failedList) {
-      if (batch.stopRequested) break;
-      try {
-        const { data, mimeType } = await fetchImage(item.url, tabId);
-        const ext = getFileExtension(item.url, mimeType);
-        folder.file(padNumber(item.index + 1, config.namingFormat, total) + ext, data);
-        completed++;
-        failed--;
-      } catch (e) { /* give up */ }
-    }
+  if (!zipRes || !zipRes.success) {
+    throw new Error((zipRes && zipRes.error) || 'ZIP build failed');
   }
 
-  if (completed === 0) throw new Error('No images downloaded successfully');
-
-  if (zip) {
-    batch.currentStatus = 'Creating ZIP';
-    batch.currentPercent = 88;
-    broadcastProgress();
-    const base64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
-    await chrome.downloads.download({
-      url: 'data:application/zip;base64,' + base64,
-      filename: (config.useSubfolder !== false ? DEFAULT_SUBFOLDER + '/' : '') + title + '.zip',
-      saveAs: config.saveAs === true,
-      conflictAction: 'uniquify',
-    });
-  }
-
-  batch.results[index] = { title, status: 'success', images: completed };
-  return { success: true, images: completed, failed };
+  batch.results[index] = { title, status: 'success', images: zipRes.images || total };
+  return { success: true, images: zipRes.images || total, failed: zipRes.failed || 0 };
 }
 
 /* ══════════════════════════════════════
@@ -420,8 +417,6 @@ async function startBatch(config) {
   if (batch.isRunning) return { success: false, error: 'Batch already running' };
   if (!config || !config.type) return { success: false, error: 'Invalid config' };
 
-  const tab = await getActiveTab();
-  batch.workerTabId = tab.id;
   batch.isRunning = true;
   batch.stopRequested = false;
   batch.config = config;
@@ -431,22 +426,27 @@ async function startBatch(config) {
   batch.currentTitle = '';
   batch.currentStatus = 'Starting';
   batch.currentPercent = 0;
-  batch.megaZip = config.mergeZip ? new JSZip() : null;
+  batch.usedFolders = new Set();
   startKeepalive();
 
-  let urls = [];
-  if (config.type === 'list' || config.type === 'pattern') {
-    urls = (config.urls || []).slice();
-  } else {
-    urls = [config.startUrl || tab.url];
-    for (let i = 1; i < (config.count || 1); i++) urls.push(null);
-  }
-  batch.chapters = urls;
-  batch.totalChapters = urls.length;
-  batch.results = urls.map((u, i) => ({ title: u || ('Chapter ' + (i + 1)), status: 'waiting', images: 0 }));
-  broadcastProgress();
+  let failedEarly = null;
 
   try {
+    const tab = await getActiveTab();
+    batch.workerTabId = tab.id;
+
+    let urls = [];
+    if (config.type === 'list' || config.type === 'pattern') {
+      urls = (config.urls || []).slice();
+    } else {
+      urls = [config.startUrl || tab.url];
+      for (let i = 1; i < (config.count || 1); i++) urls.push(null);
+    }
+    batch.chapters = urls;
+    batch.totalChapters = urls.length;
+    batch.results = urls.map((u, i) => ({ title: u || ('Chapter ' + (i + 1)), status: 'waiting', images: 0 }));
+    broadcastProgress();
+
     for (let i = 0; i < urls.length; i++) {
       if (batch.stopRequested) break;
       batch.currentIndex = i + 1;
@@ -457,6 +457,7 @@ async function startBatch(config) {
 
       let currentUrl = urls[i];
 
+      // Resolve next chapter untuk mode 'next'
       if (config.type === 'next' && i > 0) {
         batch.currentStatus = 'Finding next chapter';
         broadcastProgress();
@@ -469,8 +470,7 @@ async function startBatch(config) {
         }
         currentUrl = next.url;
         if (!currentUrl && next.clicked) {
-          await sleep(3000);
-          try { const t = await chrome.tabs.get(batch.workerTabId); currentUrl = t.url; } catch (e) { /* ignore */ }
+          currentUrl = await waitForUrlChange(batch.workerTabId);
         }
         if (!currentUrl) {
           batch.results[i] = { title: batch.currentTitle, status: 'error', images: 0 };
@@ -502,6 +502,7 @@ async function startBatch(config) {
         if (!config.skipErrors) break;
       }
 
+      // Delay dengan countdown
       const delaySec = config.chapterDelay || 0;
       if (i < urls.length - 1 && delaySec > 0) {
         for (let s = delaySec; s > 0; s--) {
@@ -514,27 +515,28 @@ async function startBatch(config) {
       }
     }
 
+    // Merge mode
     if (config.mergeZip && batch.successCount > 0 && !batch.stopRequested) {
       batch.currentStatus = 'Merging chapters';
       batch.currentPercent = 90;
       broadcastProgress();
-      const base64 = await batch.megaZip.generateAsync({ type: 'base64', compression: 'STORE' });
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      await chrome.downloads.download({
-        url: 'data:application/zip;base64,' + base64,
-        filename: (config.useSubfolder !== false ? DEFAULT_SUBFOLDER + '/' : '') + 'manhwa-batch-' + ts + '.zip',
+      const merged = await sendToOffscreen('FINALIZE_MERGE', {
+        filename: 'manhwa-batch-' + ts + '.zip',
         saveAs: config.saveAs === true,
-        conflictAction: 'uniquify',
+        useSubfolder: config.useSubfolder !== false,
       });
+      if (!merged || !merged.success) throw new Error((merged && merged.error) || 'Merge failed');
     }
   } catch (e) {
+    failedEarly = e;
     console.error(`${LOG_PREFIX} Batch error:`, e);
   } finally {
     const stopped = batch.stopRequested;
     batch.isRunning = false;
-    batch.megaZip = null;
     stopKeepalive();
-    batch.currentStatus = stopped ? 'Stopped' : 'Complete';
+    closeOffscreenDoc();
+    batch.currentStatus = stopped ? 'Stopped' : (failedEarly ? 'Failed' : 'Complete');
     broadcast({ action: 'BATCH_COMPLETE', data: snapshot() });
   }
 
@@ -584,6 +586,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: 'Batch already running' });
       return false;
     }
+    // Fire-and-forget: loop jalan di background, respons segera.
+    // Semua error ditangani di dalam startBatch → selalu broadcast BATCH_COMPLETE.
     startBatch(message.config)
       .catch((e) => console.error(`${LOG_PREFIX} Batch error:`, e));
     sendResponse({ success: true });
@@ -593,12 +597,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'STOP_BATCH') {
     batch.stopRequested = true;
     sendResponse({ success: true });
-    return true;
+    return false;
   }
 
   if (message.action === 'GET_BATCH_STATE') {
     sendResponse({ success: true, state: snapshot() });
-    return true;
+    return false;
+  }
+
+  // Progress ZIP dari offscreen document → teruskan ke popup via BATCH_PROGRESS.
+  if (message.action === 'ZIP_PROGRESS') {
+    const d = message.data || {};
+    if (d.status) batch.currentStatus = d.status;
+    if (typeof d.percent === 'number') batch.currentPercent = d.percent;
+    broadcastProgress();
+    return false;
+  }
+
+  // Heartbeat offscreen (me-reset idle timer SW) & handshake siap-tidaknya.
+  if (message.action === 'OFFSCREEN_PING') {
+    sendResponse({ alive: true });
+    return false;
   }
 
   return false;
