@@ -588,6 +588,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+    // Offscreen document tidak punya chrome.tabs → ambilkan blob: URL lewat content script.
+  if (message.action === 'FETCH_IMAGE_VIA_TAB') {
+    (async () => {
+      try {
+        const res = await chrome.tabs.sendMessage(message.tabId, { action: 'FETCH_IMAGE', url: message.url });
+        if (!res || !res.success || !res.data) throw new Error((res && res.error) || 'Fetch failed');
+        sendResponse({ success: true, data: res.data, mimeType: res.mimeType });
+      } catch (e) {
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // Offscreen document tidak punya chrome.downloads → downloadkan blob URL yang dibuatnya.
+  if (message.action === 'DOWNLOAD_BLOB_URL') {
+    const { url, filename, saveAs, useSubfolder } = message;
+    const finalFilename = useSubfolder !== false ? `${DEFAULT_SUBFOLDER}/${filename}` : filename;
+    chrome.downloads.download({
+      url,
+      filename: finalFilename,
+      saveAs: saveAs === true,
+      conflictAction: 'uniquify',
+    })
+      .then((downloadId) => sendResponse({ success: true, downloadId }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (message.action === 'START_BATCH') {
     if (batch.isRunning) {
       sendResponse({ success: false, error: 'Batch already running' });

@@ -3,12 +3,14 @@
  * - Membangun ZIP (per-chapter & merged) dari daftar image URL
  * - Download via Blob URL (URL.createObjectURL tidak tersedia di SW MV3)
  * - Keepalive anchor: ping service worker supaya tidak idle-timeout
+ *
+ * ⚠️ Offscreen document HANYA bisa pakai chrome.runtime (tidak ada chrome.tabs
+ *    & chrome.downloads). Semua fetch blob: dan download didelegasikan ke SW.
  */
 
 'use strict';
 
 const LOG_PREFIX = '[ManhwaDL-OFF]';
-const DEFAULT_SUBFOLDER = 'Manhwa Downloader';
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const FETCH_TIMEOUT = 15000;
 const KEEPALIVE_INTERVAL = 20000;
@@ -68,13 +70,15 @@ function getFileExtension(url, mimeType) {
    Image fetch
    ══════════════════════════════════════ */
 
-async function fetchImage(url, tabId) {
-  if (url.startsWith('blob:')) {
-    // blob: URL hanya bisa dibaca dari halaman yang membuatnya → content script
-    const res = await chrome.tabs.sendMessage(tabId, { action: 'FETCH_IMAGE', url });
-    if (!res || !res.success || !res.data) throw new Error((res && res.error) || 'Fetch failed');
-    return { data: base64ToBytes(res.data), mimeType: res.mimeType };
-  }
+// Fetch blob: URL lewat content script, diperantarai service worker.
+// Offscreen document TIDAK punya chrome.tabs, jadi minta tolong ke SW.
+async function fetchViaServiceWorker(url, tabId) {
+  const res = await chrome.runtime.sendMessage({ action: 'FETCH_IMAGE_VIA_TAB', url, tabId });
+  if (!res || !res.success || !res.data) throw new Error((res && res.error) || 'Fetch failed');
+  return { data: base64ToBytes(res.data), mimeType: res.mimeType };
+}
+
+async function fetchDirect(url) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
   try {
@@ -88,6 +92,22 @@ async function fetchImage(url, tabId) {
   } catch (error) {
     clearTimeout(timeoutId);
     throw new Error(error.name === 'AbortError' ? 'Timeout' : error.message);
+  }
+}
+
+async function fetchImage(url, tabId) {
+  if (url.startsWith('blob:')) {
+    return fetchViaServiceWorker(url, tabId);
+  }
+  try {
+    return await fetchDirect(url);
+  } catch (e) {
+    // Fallback: lewat content script (Referer/anti-hotlink lebih akurat)
+    try {
+      return await fetchViaServiceWorker(url, tabId);
+    } catch (e2) {
+      throw new Error(e.message || e2.message);
+    }
   }
 }
 
@@ -153,14 +173,18 @@ async function addImagesToFolder(folder, urls, tabId, namingFormat) {
 }
 
 async function downloadBlob(blob, filename, saveAs, useSubfolder) {
+  // Offscreen document TIDAK punya chrome.downloads. Buat blob URL di sini,
+  // lalu minta service worker yang memanggil chrome.downloads.download.
   const blobUrl = URL.createObjectURL(blob);
   try {
-    await chrome.downloads.download({
+    const res = await chrome.runtime.sendMessage({
+      action: 'DOWNLOAD_BLOB_URL',
       url: blobUrl,
-      filename: (useSubfolder !== false ? DEFAULT_SUBFOLDER + '/' : '') + filename,
+      filename: filename,
       saveAs: saveAs === true,
-      conflictAction: 'uniquify',
+      useSubfolder: useSubfolder !== false,
     });
+    if (!res || !res.success) throw new Error((res && res.error) || 'Download failed');
   } finally {
     setTimeout(() => {
       try { URL.revokeObjectURL(blobUrl); } catch (e) { /* ignore */ }
