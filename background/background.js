@@ -91,6 +91,7 @@ const batch = {
   currentStatus: '',
   currentPercent: 0,
   usedFolders: null, // Set — anti-tabrakan nama folder di merge mode
+  mergeBase: '', 
   keepaliveId: null,
 };
 
@@ -270,10 +271,15 @@ async function ensureOffscreenDoc() {
       justification: 'ZIP files must be built and downloaded as Blob URLs; URL.createObjectURL is unavailable in MV3 service workers.',
     });
   } catch (e) {
+    // Chrome 116+ punya hasDocument; kalau doc ternyata sudah ada → sukses.
     if (chrome.offscreen.hasDocument) {
       try { if (await chrome.offscreen.hasDocument()) return; } catch (e2) { /* ignore */ }
     }
-    throw e;
+    // Chrome <116 tidak punya hasDocument → fallback: error "already exists"
+    // berarti doc sudah terbuka. Anggap sukses supaya megaZip (merge mode)
+    // tidak hilang karena doc di-recreate tiap chapter.
+    const msg = String((e && e.message) || '');
+    if (!/single offscreen document|already exists|already created/i.test(msg)) throw e;
   }
   // Handshake: pastikan listener offscreen sudah siap.
   for (let i = 0; i < 5; i++) {
@@ -354,6 +360,7 @@ async function processChapter(url, index, config) {
     urls: images,
     namingFormat: config.namingFormat,
     merge: !!config.mergeZip,
+    mergeBase: batch.mergeBase,
     filename: title + '.zip',
     saveAs: config.saveAs === true,
     useSubfolder: config.useSubfolder !== false,
@@ -427,6 +434,7 @@ async function startBatch(config) {
   batch.currentStatus = 'Starting';
   batch.currentPercent = 0;
   batch.usedFolders = new Set();
+  batch.mergeBase = 'manhwa-batch-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   startKeepalive();
 
   let failedEarly = null;
@@ -520,9 +528,8 @@ async function startBatch(config) {
       batch.currentStatus = 'Merging chapters';
       batch.currentPercent = 90;
       broadcastProgress();
-      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const merged = await sendToOffscreen('FINALIZE_MERGE', {
-        filename: 'manhwa-batch-' + ts + '.zip',
+        mergeBase: batch.mergeBase,
         saveAs: config.saveAs === true,
         useSubfolder: config.useSubfolder !== false,
       });

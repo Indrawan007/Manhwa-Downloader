@@ -12,6 +12,7 @@ const DEFAULT_SUBFOLDER = 'Manhwa Downloader';
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const FETCH_TIMEOUT = 15000;
 const KEEPALIVE_INTERVAL = 20000;
+const MERGE_MAX_BYTES = 200 * 1024 * 1024; // 200 MB per merged ZIP part (jaga memori)
 
 const MIME_MAP = Object.freeze({
   'image/png': '.png',
@@ -20,7 +21,11 @@ const MIME_MAP = Object.freeze({
   'image/jpg': '.jpg',
 });
 
-let megaZip = null; // JSZip untuk merge mode (state persisten selama doc hidup)
+let megaZip = null;   // JSZip untuk merge mode (state persisten selama doc hidup)
+let megaBytes = 0;    // akumulasi byte gambar di dalam megaZip
+let megaParts = 0;    // jumlah part yang sudah di-flush
+let megaBase = '';    // nama dasar file merge (mis. 'manhwa-batch-...')
+let megaActive = false; // true = sesi merge sedang berjalan
 let busy = false;
 
 /* ══════════════════════════════════════
@@ -98,6 +103,7 @@ async function addImagesToFolder(folder, urls, tabId, namingFormat) {
   const total = urls.length;
   let completed = 0;
   let failed = 0;
+  let bytes = 0;
   const failedList = [];
   const concurrency = 6;
   let idx = 0;
@@ -110,6 +116,7 @@ async function addImagesToFolder(folder, urls, tabId, namingFormat) {
         try {
           const { data, mimeType } = await fetchImage(urls[i], tabId);
           folder.file(padNumber(i + 1, namingFormat, total) + getFileExtension(urls[i], mimeType), data);
+          bytes += data.length;
           completed++;
         } catch (e) {
           failed++;
@@ -136,12 +143,13 @@ async function addImagesToFolder(folder, urls, tabId, namingFormat) {
     try {
       const { data, mimeType } = await fetchImage(item.url, tabId);
       folder.file(padNumber(item.index + 1, namingFormat, total) + getFileExtension(item.url, mimeType), data);
+      bytes += data.length;
       completed++;
       failed--;
     } catch (e) { /* give up */ }
   }
 
-  return { completed, failed };
+  return { completed, failed, bytes };
 }
 
 async function downloadBlob(blob, filename, saveAs, useSubfolder) {
@@ -180,12 +188,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let failed = 0;
 
         if (message.merge) {
-          if (!megaZip) megaZip = new JSZip();
+          if (!megaActive) {
+            megaZip = new JSZip();
+            megaBytes = 0;
+            megaParts = 0;
+            megaBase = message.mergeBase || ('manhwa-batch-' + Date.now());
+            megaActive = true;
+          }
           const folder = megaZip.folder(folderName);
           const res = await addImagesToFolder(folder, message.urls, message.tabId, message.namingFormat);
           completed = res.completed;
           failed = res.failed;
+          megaBytes += res.bytes;
           if (completed === 0) throw new Error('No images downloaded successfully');
+
+          // Auto-split: kalau akumulasi melebihi batas, flush jadi ZIP part
+          // supaya memori offscreen tidak membengkak pada batch raksasa.
+          if (megaBytes >= MERGE_MAX_BYTES) {
+            progress('Splitting merged ZIP', 90);
+            megaParts++;
+            const partName = megaBase + '-part' + megaParts + '.zip';
+            const blob = await megaZip.generateAsync({ type: 'blob', compression: 'STORE' });
+            megaZip = new JSZip();
+            megaBytes = 0;
+            progress('Saving', 100);
+            await downloadBlob(blob, partName, message.saveAs, message.useSubfolder);
+          }
           sendResponse({ success: true, images: completed, failed });
         } else {
           const zip = new JSZip();
@@ -220,8 +248,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         progress('Merging chapters', 90);
         const blob = await megaZip.generateAsync({ type: 'blob', compression: 'STORE' });
         megaZip = null;
+        megaBytes = 0;
+        megaActive = false;
         progress('Saving', 100);
-        await downloadBlob(blob, message.filename, message.saveAs, message.useSubfolder);
+        const base = message.mergeBase || megaBase || ('manhwa-batch-' + Date.now());
+        megaParts++;
+        // Kalau cuma satu part, nama tetap polos (tanpa -partN).
+        const partName = megaParts === 1 ? base + '.zip' : base + '-part' + megaParts + '.zip';
+        await downloadBlob(blob, partName, message.saveAs, message.useSubfolder);
         sendResponse({ success: true });
       } catch (e) {
         console.error(`${LOG_PREFIX} ❌ FINALIZE_MERGE:`, e);
