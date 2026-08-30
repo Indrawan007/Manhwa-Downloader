@@ -47,6 +47,7 @@
     scanSpeed: $('scanSpeed'),
     imageSelector: $('imageSelector'),
     askSaveLocation: $('askSaveLocation'),
+        useSubfolder: $('useSubfolder'),
     btnScan: $('btnScan'),
     btnStop: $('btnStop'),
     btnTestScroll: $('btnTestScroll'),
@@ -68,6 +69,7 @@
     statusMessage: $('statusMessage'),
     btnText: document.querySelector('.btn-text'),
     btnLoading: document.querySelector('.btn-loading'),
+                  useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
   };
 
   /* ══════════════════════════════════════
@@ -76,7 +78,6 @@
 
   const state = {
     scannedImages: [],
-    scannedMeta: [],
     blobCache: new Map(),
     isDownloading: false,
     isScanning: false,
@@ -191,9 +192,15 @@
     return name.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim() || 'manhwa-chapter';
   }
 
-  function arrayToBlob(dataArray, mimeType) {
+  function base64ToBlob(base64, mimeType) {
     mimeType = mimeType || 'image/jpeg';
-    return new Blob([new Uint8Array(dataArray)], { type: mimeType });
+    const byteString = atob(base64);
+    const len = byteString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = byteString.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mimeType });
   }
 
   async function fetchImageViaContentScript(url) {
@@ -209,7 +216,25 @@
     if (!response.data) throw new Error('Invalid response');
 
     return {
-      blob: arrayToBlob(response.data, response.mimeType),
+      blob: base64ToBlob(response.data, response.mimeType),
+      mimeType: response.mimeType,
+    };
+  }
+
+  async function fetchImageViaBackground(url) {
+    const response = await chrome.runtime.sendMessage({
+      action: 'FETCH_IMAGE',
+      url: url,
+    });
+
+    if (!response || !response.success) {
+      throw new Error((response && response.error) || 'Fetch failed');
+    }
+
+    if (!response.data) throw new Error('Invalid response');
+
+    return {
+      blob: base64ToBlob(response.data, response.mimeType),
       mimeType: response.mimeType,
     };
   }
@@ -229,19 +254,27 @@
         let result;
 
         if (url.startsWith('blob:')) {
+          // blob: URL hanya bisa dibaca dari halaman yang membuatnya
           result = await fetchImageViaContentScript(url);
         } else {
+          // HTTP(S): utamakan background worker (host_permissions → bebas CORS)
           try {
-            const response = await fetch(url, {
-              mode: 'cors',
-              credentials: 'include',
-              headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
-            });
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            const blob = await response.blob();
-            result = { blob: blob, mimeType: blob.type };
-          } catch (fetchErr) {
-            result = await fetchImageViaContentScript(url);
+            result = await fetchImageViaBackground(url);
+          } catch (bgErr) {
+            // Fallback: fetch langsung dari popup
+            try {
+              const response = await fetch(url, {
+                mode: 'cors',
+                credentials: 'include',
+                headers: { 'Accept': 'image/webp,image/png,image/jpeg,image/*' },
+              });
+              if (!response.ok) throw new Error('HTTP ' + response.status);
+              const blob = await response.blob();
+              result = { blob: blob, mimeType: blob.type };
+            } catch (fetchErr) {
+              // Fallback terakhir: lewat content script
+              result = await fetchImageViaContentScript(url);
+            }
           }
         }
 
@@ -315,6 +348,12 @@
         if (dom.askSaveLocation && typeof settings.askSaveLocation === 'boolean') {
           dom.askSaveLocation.checked = settings.askSaveLocation;
         }
+                if (dom.useSubfolder && typeof settings.useSubfolder === 'boolean') {
+          dom.useSubfolder.checked = settings.useSubfolder;
+        }
+          if (dom.useSubfolder) {
+    dom.useSubfolder.addEventListener('change', saveSettings);
+  }
       }
     } catch (e) {
       // Silent
@@ -417,7 +456,6 @@
 
       const rawImages = Array.isArray(response.images) ? response.images : [];
       state.scannedImages = deduplicateUrls(rawImages);
-      state.scannedMeta = Array.isArray(response.meta) ? response.meta : [];
 
       if (!dom.chapterName.value.trim() && response.title) {
         dom.chapterName.value = response.title;
@@ -784,8 +822,8 @@
         filename: filename,
         saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
       });
-
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
+      
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
 
       setAppStatus('Downloaded', 'success');
 
@@ -1431,7 +1469,7 @@ await chrome.runtime.sendMessage({
   saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
 });
 
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
 
         updateBatchItem(index, 'success', completed + '✓', completed);
         console.log('[Batch] ✅ Chapter ' + (index + 1) + ' complete: ' + completed + ' images');
@@ -1706,7 +1744,7 @@ await chrome.runtime.sendMessage({
             saveAs: (dom.askSaveLocation && dom.askSaveLocation.checked) || false,
           });
 
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        useSubfolder: (dom.useSubfolder && dom.useSubfolder.checked) || false,
 
           updateBatchCurrent('Complete!', 'Merged ZIP saved', 100);
         }

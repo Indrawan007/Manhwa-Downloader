@@ -6,7 +6,12 @@
 (() => {
   'use strict';
 
-  const DEBUG = false; // ⚡ Disable in production for speed
+  // Guard: mencegah re-injection (manifest + executeScript fallback)
+  if (window.__manhwaDLInjected) return;
+  window.__manhwaDLInjected = true;
+
+  const DEBUG = false;
+  
   const log = (...args) => DEBUG && console.log('[ManhwaDL]', ...args);
 
   /* ══════════════════════════════════════
@@ -338,6 +343,25 @@
     return true;
   }
 
+  function extractSrcsetCandidates(el) {
+    const result = [];
+    const attrs = ['srcset', 'data-srcset', 'data-lazy-srcset'];
+    for (let a = 0; a < attrs.length; a++) {
+      const raw = el.getAttribute && el.getAttribute(attrs[a]);
+      if (!raw) continue;
+      const parts = raw.split(',');
+      for (let p = 0; p < parts.length; p++) {
+        const url = parts[p].trim().split(/\s+/)[0];
+        if (url && !url.startsWith('data:')) {
+          try {
+            result.push(new URL(url, window.location.href).href);
+          } catch { /* skip */ }
+        }
+      }
+    }
+    return result;
+  }
+
   function getBestImageUrl(el) {
     if (!el) return null;
 
@@ -363,7 +387,7 @@
       el.getAttribute('data-url'),
       el.getAttribute('data-image'),
       el.getAttribute('data-cfsrc'),
-    ] : [el.srcset, el.src];
+    ].concat(extractSrcsetCandidates(el)) : [el.srcset, el.src];
 
     const len = candidates.length;
     for (let i = 0; i < len; i++) {
@@ -405,6 +429,10 @@
             break; // ⚡ Stop after first valid
           }
         }
+
+        // Handle responsive srcset lazy-load
+        const dataSrcset = img.getAttribute('data-srcset');
+        if (dataSrcset) img.srcset = dataSrcset;
       }
 
       if (img.loading === 'lazy') img.loading = 'eager';
@@ -417,7 +445,12 @@
       const distance = targetY - startY;
       const absDistance = Math.abs(distance);
 
+      // Watchdog: rAF di-throttle/dihentikan di tab background (batch mode),
+      // jadi pastikan tidak hang selamanya.
+      const watchdog = setTimeout(resolve, 30000);
+
       if (absDistance < 5) {
+        clearTimeout(watchdog);
         resolve();
         return;
       }
@@ -427,6 +460,7 @@
 
       const step = () => {
         if (scanState.stopRequested) {
+          clearTimeout(watchdog);
           resolve();
           return;
         }
@@ -438,6 +472,7 @@
         scrollContainer.scrollTo(startY + (traveled * direction));
 
         if (traveled >= absDistance) {
+          clearTimeout(watchdog);
           resolve();
         } else {
           requestAnimationFrame(step);
@@ -486,8 +521,8 @@
 
       const onError = () => {
         cleanup();
-        // Cek apakah punya URL valid
-        resolve(!!getBestImageUrl(img));
+        // Gambar gagal dimuat → jangan anggap valid
+        resolve(false);
       };
 
       img.addEventListener('load', onLoad, { once: true });
@@ -507,7 +542,8 @@
         }
       }, timeout);
 
-      // ⚡ Periodic check untuk lazy load trigger (200ms)
+      // ⚡ Periodic check untuk lazy load trigger
+      const checkIntervalMs = CONFIG.imageLoadCheckInterval || 40;
       let checks = 0;
       checkIntervalId = setInterval(() => {
         if (resolved) return;
@@ -521,10 +557,10 @@
         }
 
         // Stop checking after enough tries
-        if (checks * 200 >= timeout) {
+        if (checks * checkIntervalMs >= timeout) {
           clearInterval(checkIntervalId);
         }
-      }, 200);
+      }, checkIntervalMs);
     });
   }
 
@@ -577,13 +613,16 @@
       const len = imgs.length;
       for (let i = 0; i < len; i++) {
         const img = imgs[i];
-        if (!elementMap.has(img)) {
-          const y = scrollContainer.getElementY(img);
-          elementMap.set(img, { element: img, y: Math.max(0, y) });
-        }
 
+        // Hanya simpan element yang punya URL valid (buang logo/avatar/tracker)
         const url = getBestImageUrl(img);
-        if (url) urlSet.add(url);
+        if (url) {
+          urlSet.add(url);
+          if (!elementMap.has(img)) {
+            const y = scrollContainer.getElementY(img);
+            elementMap.set(img, { element: img, y: Math.max(0, y) });
+          }
+        }
       }
     };
 
@@ -806,7 +845,8 @@
             isBlob: url.startsWith('blob:'), retry: 1,
           };
           successCount++;
-        } else if (!url) {
+        } else {
+          // null ATAU URL duplikat → beri kesempatan di final attempt
           stillFailed.push(idx);
         }
       }
@@ -948,7 +988,12 @@
      Fetch (Optimized)
      ══════════════════════════════════════ */
 
-  async function fetchImageAsArray(url) {
+  /**
+   * Fetch & konversi ke base64 (dipakai untuk blob: URL, karena blob
+   * hanya bisa dibaca dari halaman yang membuatnya). HTTP(S) URL lebih
+   * baik difetch lewat background worker (lihat background.js).
+   */
+  async function fetchImageAsBase64(url) {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), CONFIG.fetchTimeout);
@@ -964,19 +1009,19 @@
         throw new Error(`Too large: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
       }
 
-      const arrayBuffer = await blob.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
 
-      // ⚡ Faster array conversion (chunked for large files)
-      const array = new Array(uint8Array.length);
-      const len = uint8Array.length;
-      for (let i = 0; i < len; i++) {
-        array[i] = uint8Array[i];
+      // ⚡ Chunked binary -> base64 (jauh lebih kecil daripada array angka)
+      let binary = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
       }
 
       return {
         success: true,
-        data: array,
+        data: btoa(binary),
         mimeType: blob.type,
         size: blob.size,
       };
@@ -1054,7 +1099,7 @@
       }
 
       case 'FETCH_IMAGE': {
-        fetchImageAsArray(message.url).then(sendResponse);
+        fetchImageAsBase64(message.url).then(sendResponse);
         return true;
       }
 
